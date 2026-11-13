@@ -241,9 +241,9 @@ export class RoomManager {
         let descriptiveText = "";
 
         if (userPrompt.includes("remove") || userPrompt.includes("delete")) {
-          descriptiveText = `I've updated the architecture diagram on your whiteboard by removing the requested component and reconnecting the remaining services.\n\nA preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to apply this change!`;
+          descriptiveText = `I've updated the architecture diagram on your whiteboard by removing the requested components.\n\n*(Auto-applied to whiteboard. You can undo or restore previous states anytime from the Checkpoints tab)*`;
         } else if (result.explanation && result.explanation.trim().length > 40) {
-          descriptiveText = `${result.explanation.trim()}\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
+          descriptiveText = `${result.explanation.trim()}\n\n*(Drawn directly on your whiteboard. You can ask me to modify, connect new microservices, or delete components anytime!)*`;
         } else {
           // Extract generated node labels to synthesize a dynamic, domain-specific Miro-grade breakdown
           const nodeLabels = (result.ghostResult?.ghostElements || [])
@@ -283,7 +283,7 @@ export class RoomManager {
             breakdown += `Persistence and caching are distributed across **${storageNodes.join("**, **")}** to guarantee sub-millisecond retrieval alongside durable transactional consistency. `;
           }
 
-          breakdown += `\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
+          breakdown += `\n\n*(Drawn directly on your whiteboard. You can ask me to modify, connect new microservices, or delete components anytime!)*`;
           descriptiveText = breakdown;
         }
 
@@ -297,8 +297,49 @@ export class RoomManager {
         aiTurnMap.set("processedByAgent", true);
 
         room.doc.transact(() => {
-          transcriptArray.push([aiTurnMap]);
+          // DIRECT AGENT EXECUTION: Apply mutations immediately to whiteboard
+          const elementsArray = room.doc.getArray("elements");
+          for (const mut of (result.mutations || [])) {
+            if (mut.op === "add") {
+              elementsArray.push([mut.element]);
+            } else if (mut.op === "delete") {
+              for (let i = elementsArray.length - 1; i >= 0; i--) {
+                const item: any = elementsArray.get(i);
+                const rawEl = typeof item?.toJSON === "function" ? item.toJSON() : item;
+                if (rawEl && rawEl.id === mut.elementId) {
+                  elementsArray.delete(i, 1);
+                }
+              }
+            } else if (mut.op === "update") {
+              for (let i = 0; i < elementsArray.length; i++) {
+                const item: any = elementsArray.get(i);
+                const rawEl = typeof item?.toJSON === "function" ? item.toJSON() : item;
+                if (rawEl && rawEl.id === mut.elementId) {
+                  const updated = { ...rawEl };
+                  for (const [pk, pv] of Object.entries(mut.patch)) {
+                    if (pk === "appendBoundElement") {
+                      const existingBounds = Array.isArray(updated.boundElements) ? updated.boundElements : [];
+                      updated.boundElements = [...existingBounds, pv];
+                    } else {
+                      updated[pk] = pv;
+                    }
+                  }
+                  elementsArray.delete(i, 1);
+                  elementsArray.insert(i, [updated]);
+                }
+              }
+            }
+          }
+
+          propRecord.status = "approved";
+          propRecord.resolvedBy = lastUserTurn?.speakerId || "agent";
+          propRecord.resolvedAt = Date.now();
+          for (const [k, v] of Object.entries(propRecord)) {
+            propMap.set(k, v);
+          }
           proposalsMap.set(result.proposalId!, propMap);
+
+          transcriptArray.push([aiTurnMap]);
 
           // Mark turns processed
           for (let i = 0; i < transcriptArray.length; i++) {
@@ -314,6 +355,18 @@ export class RoomManager {
           const used = (meta.get("proposalsUsedInSession") as number) || 0;
           meta.set("proposalsUsedInSession", used + 1);
         });
+
+        // Instant checkpoint snapshot for history & undo
+        room.dirty = true;
+        this.snapshotStorage.createCheckpoint(
+          room.boardId,
+          room.doc,
+          `AI: ${result.reason?.slice(0, 40) || "System Design"}`,
+          "ai_approved",
+          lastUserTurn?.speakerId,
+          result.proposalId
+        );
+        this.snapshotStorage.saveRoomStateToDb(room.boardId, room.doc);
 
         // Broadcast proposal created via awareness to avoid crashing y-websocket client binary decoder
         room.awareness.setLocalStateField("lastProposal", {

@@ -64,6 +64,7 @@ export const EditIntentSchema = z.discriminatedUnion("op", [
 
 export const IntentParserResponseSchema = z.object({
   operations: z.array(EditIntentSchema).min(1).max(50),
+  explanation: z.string().optional(),
 });
 
 export function extractAndValidateJson<T>(rawText: string, schema: z.ZodType<T>): T {

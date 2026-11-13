@@ -238,18 +238,53 @@ export class RoomManager {
         const lastUserTurn = unprocessed[unprocessed.length - 1];
         const userPrompt = (lastUserTurn?.text || "").toLowerCase();
 
-        let descriptiveText = `I have drawn the architecture diagram on your whiteboard for: **${result.reason || "Architectural modification"}** as a structured left-to-right diagram.`;
+        let descriptiveText = "";
 
-        if (userPrompt.includes("calculator")) {
-          descriptiveText = `### Calculator System Architecture\nI've drawn the calculator architecture on your board as a left-to-right diagram.\n\nWeb, mobile, and public API clients go through an API Gateway that handles auth, rate limiting, and routing. The gateway sends requests to the calculation service. There, a tokenizer & parser turns the expression into a syntax tree and a validator checks it. An evaluator then runs it using basic and scientific operations. A Redis cache stores repeated calculation results for instant lookups. A separate History Service stores users and past calculations in PostgreSQL. Logging, metrics, and alerts monitor the gateway and evaluator.\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
-        } else if (userPrompt.includes("uber") || userPrompt.includes("ride") || userPrompt.includes("delivery") || userPrompt.includes("doordash")) {
-          descriptiveText = `### Real-Time Dispatch & Mobility Architecture\nI've drawn the ride-hailing and dispatch architecture on your board as a left-to-right diagram.\n\nRider and Driver mobile apps communicate through an API Gateway (Envoy) over HTTPS and WebSocket connections for real-time location streaming. The gateway forwards ride requests to a Matching & Dispatch Engine, which queries a Redis Geospatial cluster for nearby available drivers. Trip lifecycle events are published to a Kafka event broker, consumed by a Trip & Ledger Service writing to PostgreSQL and charging via Stripe.\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
-        } else if (userPrompt.includes("ledger") || userPrompt.includes("financial") || userPrompt.includes("transaction")) {
-          descriptiveText = `### Financial Ledger & Transaction Processing Architecture\nI've drawn the CQRS and Event Sourcing ledger architecture on your board.\n\nClient applications submit payments to an API Gateway. The command path routes through a high-throughput Transaction Service, which appends immutable events to Apache Kafka. The Ledger Service consumes events and writes double-entry bookkeeping records into PostgreSQL, while a Balance Projector maintains real-time customer balances in Redis.\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
-        } else if (userPrompt.includes("remove") || userPrompt.includes("delete")) {
-          descriptiveText = `I've updated the diagram on your board by removing the requested component and adjusting the data flows.\n\nA preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to apply this change!`;
+        if (userPrompt.includes("remove") || userPrompt.includes("delete")) {
+          descriptiveText = `I've updated the architecture diagram on your whiteboard by removing the requested component and reconnecting the remaining services.\n\nA preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to apply this change!`;
+        } else if (result.explanation && result.explanation.trim().length > 40) {
+          descriptiveText = `${result.explanation.trim()}\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
         } else {
-          descriptiveText = `### System Architecture Blueprint\nI've drawn the complete architecture on your board as a left-to-right diagram with decoupled client tiers, API Gateway, core application microservices, Kafka event streaming, Redis caching, and primary PostgreSQL persistence.\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
+          // Extract generated node labels to synthesize a dynamic, domain-specific Miro-grade breakdown
+          const nodeLabels = (result.ghostResult?.ghostElements || [])
+            .filter((e: any) => e.type === "rectangle" || e.type === "ellipse")
+            .map((e: any) => e.customData?.label || e.text)
+            .filter(Boolean);
+
+          const clientNodes = nodeLabels.filter((n: string) => /client|mobile|web|frontend|ui/i.test(n));
+          const gatewayNodes = nodeLabels.filter((n: string) => /gateway|ingress|proxy|envoy|kong/i.test(n));
+          const serviceNodes = nodeLabels.filter((n: string) => !/db|database|postgres|redis|cache|client|mobile|web|frontend|gateway|ingress|queue|kafka|broker/i.test(n));
+          const queueNodes = nodeLabels.filter((n: string) => /queue|kafka|rabbitmq|sqs|event|pubsub|broker/i.test(n));
+          const storageNodes = nodeLabels.filter((n: string) => /db|database|postgres|sql|mongo|dynamo|redis|cache|s3|storage/i.test(n));
+
+          const cleanSystemTitle = (lastUserTurn?.text || "System")
+            .replace(/\b(i want to|create|draw|design|build|architecture|for it|a good|system|diagram|please|can you|just)\b/gi, "")
+            .trim()
+            .replace(/^a\s+|^an\s+/i, "")
+            .replace(/\b\w/g, (c) => c.toUpperCase()) || "System";
+
+          let breakdown = `### ${cleanSystemTitle} Architecture\nI've drawn the complete ${cleanSystemTitle} architecture on your whiteboard as a structured left-to-right diagram.\n\n`;
+
+          if (clientNodes.length > 0 && gatewayNodes.length > 0) {
+            breakdown += `Web and mobile clients (${clientNodes.join(", ")}) route through the ${gatewayNodes[0]} for authentication, rate limiting, and traffic routing. `;
+          } else if (clientNodes.length > 0) {
+            breakdown += `Clients (${clientNodes.join(", ")}) communicate directly with the backend service layer. `;
+          }
+
+          if (serviceNodes.length > 0) {
+            breakdown += `The domain logic is decomposed into dedicated microservices: **${serviceNodes.join("**, **")}** ensuring separation of concerns and independent elasticity. `;
+          }
+
+          if (queueNodes.length > 0) {
+            breakdown += `Asynchronous workflows and high-volume event streams are decoupled using **${queueNodes.join("**, **")}**. `;
+          }
+
+          if (storageNodes.length > 0) {
+            breakdown += `Persistence and caching are distributed across **${storageNodes.join("**, **")}** to guarantee sub-millisecond retrieval alongside durable transactional consistency. `;
+          }
+
+          breakdown += `\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
+          descriptiveText = breakdown;
         }
 
         const aiTurnMap = new Y.Map();

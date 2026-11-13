@@ -33,6 +33,7 @@ export interface PipelineEvaluationOutput {
   providerUsed?: string;
   mutations?: PlannedMutation[];
   ghostResult?: GhostOverlayResult;
+  explanation?: string;
   errors?: string[];
 }
 
@@ -181,7 +182,7 @@ ${deltaContext}`;
     // ==========================================
     // STAGE 2: INTENT PARSING
     // ==========================================
-    const stage2System = `You are an architectural diagram compiler. Convert the confirmed engineering decision into an ordered list of atomic graph edit operations against the provided diagram JSON.
+    const stage2System = `You are an expert Principal Systems Architect. Convert the requested architecture or modification into an ordered list of atomic graph edit operations and a professional technical breakdown.
 
 Allowed operations (use ONLY these 8 types):
 1. {"op": "add_node", "label": string, "nodeType": "service"|"database"|"cache"|"queue"|"gateway"|"external", "positionHint": "right_of"|"left_of"|"below"|"above"|"center", "anchorNodeId"?: string}
@@ -196,8 +197,9 @@ Allowed operations (use ONLY these 8 types):
 Constraints:
 - Reference existing node and edge IDs accurately from CURRENT DIAGRAM GRAPH.
 - Prefer "insert_between" when placing middleware/caches/queues along an existing connection.
-- If the decision is to draw or generate a newly agreed system architecture (e.g. for an app discussed in the conversation like Uber, E-commerce, Chat, Booking, Streaming, etc.), generate a complete professional set of add_node and add_edge operations with standard components (Client/Apps -> API Gateway -> Microservices -> Databases/Caches/Queues) with descriptive labels and protocols.
-- Output strictly valid JSON: {"operations": EditIntent[]}`;
+- If the decision is to draw or generate an architecture for ANY system (e.g. streaming, calculator, ride-hailing, e-commerce, messaging, fintech, healthcare, IoT, games, social network, etc.), generate a complete set of add_node and add_edge operations with standard components (Client/Apps -> API Gateway -> Microservices -> Databases/Caches/Queues) with descriptive labels and protocols.
+- Include a 2-paragraph professional technical "explanation" explaining why this design was chosen and how data travels through the system.
+- Output strictly valid JSON: {"operations": EditIntent[], "explanation": string}`;
 
     const stage2User = `CONFIRMED DECISION:
 "${decision.reason}"
@@ -345,6 +347,7 @@ ${JSON.stringify(compactGraph, null, 2)}`;
       providerUsed,
       mutations: plannedMutations,
       ghostResult,
+      explanation: parsedOps.explanation,
     };
   }
 }

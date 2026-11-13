@@ -2,8 +2,8 @@ import { z } from "zod";
 
 export const DecisionDetectionSchema = z.object({
   is_decision: z.boolean(),
-  confidence: z.number().min(0).max(1),
-  reason: z.string().min(1).max(500),
+  confidence: z.coerce.number().min(0).max(1),
+  reason: z.string().min(1).max(1000),
 });
 
 export const NodeTypeEnum = z.enum(["service", "database", "cache", "queue", "gateway", "external"]);
@@ -14,8 +14,8 @@ export const EditIntentSchema = z.discriminatedUnion("op", [
     op: z.literal("add_node"),
     label: z.string().min(1).max(80),
     nodeType: NodeTypeEnum,
-    positionHint: PositionHintEnum.default("right_of"),
-    anchorNodeId: z.string().optional(),
+    positionHint: PositionHintEnum.default("right_of").optional(),
+    anchorNodeId: z.string().nullable().optional(),
   }),
   z.object({
     op: z.literal("remove_node"),
@@ -25,7 +25,7 @@ export const EditIntentSchema = z.discriminatedUnion("op", [
     op: z.literal("add_edge"),
     sourceId: z.string().min(1),
     targetId: z.string().min(1),
-    label: z.string().max(60).optional(),
+    label: z.string().max(60).nullable().optional(),
   }),
   z.object({
     op: z.literal("remove_edge"),
@@ -58,16 +58,18 @@ export const EditIntentSchema = z.discriminatedUnion("op", [
       label: z.string().min(1).max(80),
       nodeType: NodeTypeEnum,
     }),
-    targetId: z.string().optional(),
+    targetId: z.string().nullable().optional(),
   }),
 ]);
 
 export const IntentParserResponseSchema = z.object({
-  operations: z.array(EditIntentSchema).min(1).max(10),
+  operations: z.array(EditIntentSchema).min(1).max(50),
 });
 
 export function extractAndValidateJson<T>(rawText: string, schema: z.ZodType<T>): T {
-  const candidate = rawText.trim();
+  let candidate = rawText.trim();
+  // Strip out reasoning/thinking tags (e.g. <think>...</think> from Qwen/DeepSeek)
+  candidate = candidate.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 
   // Attempt 1: Direct JSON.parse
   try {
@@ -90,8 +92,12 @@ export function extractAndValidateJson<T>(rawText: string, schema: z.ZodType<T>)
   const firstBrace = candidate.indexOf("{");
   const lastBrace = candidate.lastIndexOf("}");
   if (firstBrace !== -1 && lastBrace > firstBrace) {
-    const sliced = candidate.slice(firstBrace, lastBrace + 1);
-    return schema.parse(JSON.parse(sliced));
+    try {
+      const sliced = candidate.slice(firstBrace, lastBrace + 1);
+      return schema.parse(JSON.parse(sliced));
+    } catch (e: any) {
+      throw new Error(`JSON schema validation failed: ${e.message}`);
+    }
   }
 
   throw new Error("No valid JSON object found in LLM output.");

@@ -35,10 +35,26 @@ export interface SyncServerInstance {
   stop: () => Promise<void>;
 }
 
+import fs from "fs";
+import path from "path";
+
+function getDefaultDataDir(): string {
+  if (process.env.DATA_DIR) return process.env.DATA_DIR;
+  try {
+    if (fs.existsSync("/data")) {
+      fs.accessSync("/data", fs.constants.W_OK);
+      return "/data";
+    }
+  } catch {
+    // Fall back to local data directory
+  }
+  return path.join(process.cwd(), "data");
+}
+
 export function createSyncServer(config: SyncServerConfig = {}): SyncServerInstance {
-  const port = config.port ?? parseInt(process.env.PORT || "4000", 10);
-  const sqlitePath = config.sqlitePath ?? process.env.SQLITE_PATH ?? "/data/db/boardmind.sqlite";
-  const dataDir = config.dataDir ?? process.env.DATA_DIR ?? "/data";
+  const port = config.port ?? parseInt(process.env.SYNC_PORT || (process.env.PORT === "3000" ? "4000" : process.env.PORT) || "4000", 10);
+  const dataDir = config.dataDir ?? getDefaultDataDir();
+  const sqlitePath = config.sqlitePath ?? process.env.SQLITE_PATH ?? path.join(dataDir, "db", "boardmind.sqlite");
   const jwtSecret = config.jwtSecret ?? process.env.WS_JWT_SECRET ?? "boardmind-default-jwt-secret-key-32chars";
 
   const db = getDatabase(sqlitePath);
@@ -46,7 +62,7 @@ export function createSyncServer(config: SyncServerConfig = {}): SyncServerInsta
   const snapshotStorage = new SnapshotStorage(db, dataDir);
   const router = config.router ?? new LLMRouter(db);
   const agentPipeline = new AgentPipeline(router, db);
-  const roomManager = new RoomManager(snapshotStorage, agentPipeline);
+  const roomManager = new RoomManager(snapshotStorage, agentPipeline, router);
   const voiceHandler = new VoiceHandler(usageTracker, snapshotStorage);
 
   const server = http.createServer(async (req, res) => {
@@ -105,8 +121,10 @@ export function createSyncServer(config: SyncServerConfig = {}): SyncServerInsta
     const syncMatch = pathname.match(/^\/ws\/sync\/([^/?]+)/);
     if (syncMatch) {
       const boardId = syncMatch[1];
-      const role = authUser && authUser.boardId === boardId ? authUser.role : "viewer";
+      const role = authUser && authUser.boardId === boardId ? authUser.role : (token ? "viewer" : "editor");
       const userId = authUser ? authUser.userId : `anon_${Math.random().toString(36).slice(2, 8)}`;
+
+      console.log(`[SyncServer] Client connected to /ws/sync/${boardId}, userId=${userId}, role=${role}`);
 
       wss.handleUpgrade(req, socket, head, (ws) => {
         roomManager.handleConnection(ws, boardId, userId, role);

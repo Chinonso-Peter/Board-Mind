@@ -34,9 +34,12 @@ export function useBoardSync(boardId: string, wsToken?: string, currentUser?: { 
     const idb = new IndexeddbPersistence(`boardmind:${boardId}`, doc);
     persistenceRef.current = idb;
 
-    // 2. WebSocket sync
+    // 2. WebSocket sync - dynamically resolve hostname to support PC localhost and Mobile private IP
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.host;
+    const host =
+      window.location.port === "3000"
+        ? `${window.location.hostname}:4000`
+        : (process.env.NEXT_PUBLIC_WS_HOST || `${window.location.hostname}:4000`);
     const wsUrl = `${proto}//${host}/ws/sync`;
 
     const provider = new WebsocketProvider(wsUrl, boardId, doc, {
@@ -86,13 +89,45 @@ export function useBoardSync(boardId: string, wsToken?: string, currentUser?: { 
       setAiStatus(currentAiStatus);
     });
 
+    // Helper to identify ephemeral ghost elements
+    const isGhostItem = (el: any): boolean => {
+      if (!el || !el.id) return false;
+      if (typeof el.id === "string" && el.id.startsWith("ghost_")) return true;
+      if (el.customData?.isGhost === true) return true;
+      if (el.customData?.proposalId) return true;
+      if (el.customData?.status === "proposed" || el.customData?.ghostId) return true;
+      return false;
+    };
+
     // Recompute elements + ghosts
     const syncState = () => {
       const elementsArray = doc.getArray("elements");
       const canonical: ExcalidrawElement[] = [];
+      let hadCorruptGhosts = false;
+
       for (let i = 0; i < elementsArray.length; i++) {
         const item: any = elementsArray.get(i);
-        canonical.push(typeof item?.toJSON === "function" ? item.toJSON() : item);
+        const el = typeof item?.toJSON === "function" ? item.toJSON() : item;
+        if (!el || !el.id || el.isDeleted) continue;
+        if (isGhostItem(el)) {
+          hadCorruptGhosts = true;
+          continue;
+        }
+        // Ensure canonical elements are always unlocked and editable
+        if (el.locked) {
+          el.locked = false;
+        }
+        canonical.push(el);
+      }
+
+      // Purge any leaked ghost elements from the permanent Yjs array
+      if (hadCorruptGhosts) {
+        doc.transact(() => {
+          elementsArray.delete(0, elementsArray.length);
+          for (const c of canonical) {
+            elementsArray.push([c]);
+          }
+        }, "clean-corrupt-ghosts");
       }
 
       // Check proposals for active ghost overlays
@@ -145,16 +180,44 @@ export function useBoardSync(boardId: string, wsToken?: string, currentUser?: { 
       setTranscript(turns);
     };
 
+    const onProviderSynced = (isSynced: boolean) => {
+      if (isSynced) {
+        syncState();
+      }
+    };
+
     doc.getArray("elements").observe(syncState);
     doc.getMap("proposals").observe(syncState);
     doc.getArray("transcript").observe(syncState);
+    doc.on("update", syncState);
     idb.on("synced", syncState);
+    provider.on("sync", onProviderSynced);
+
+    // Initial check
+    syncState();
 
     return () => {
       window.removeEventListener("online", updateOnline);
       window.removeEventListener("offline", updateOnline);
-      provider.destroy();
-      idb.destroy();
+      try {
+        doc.getArray("elements").unobserve(syncState);
+        doc.getMap("proposals").unobserve(syncState);
+        doc.getArray("transcript").unobserve(syncState);
+        doc.off("update", syncState);
+      } catch {
+        // Safe cleanup
+      }
+      try {
+        provider.off("sync", onProviderSynced);
+        provider.destroy();
+      } catch {
+        // Safe cleanup
+      }
+      try {
+        idb.destroy();
+      } catch {
+        // Safe cleanup
+      }
     };
   }, [boardId, wsToken, currentUser, doc, setIsOffline]);
 
@@ -206,6 +269,39 @@ export function useBoardSync(boardId: string, wsToken?: string, currentUser?: { 
     [doc, currentUser]
   );
 
+  const updateElements = useCallback(
+    (newElements: readonly any[]) => {
+      if (!doc || isScrubbing) return;
+
+      // Filter out ephemeral ghost overlay elements and deleted shapes
+      const canonical = newElements
+        .filter((el) => {
+          if (!el || !el.id || el.isDeleted) return false;
+          if (typeof el.id === "string" && el.id.startsWith("ghost_")) return false;
+          if (el.customData?.isGhost === true) return false;
+          if (el.customData?.proposalId) return false;
+          if (el.customData?.status === "proposed" || el.customData?.ghostId) return false;
+          return true;
+        })
+        .map((el) => {
+          // Guarantee all canonical elements on the whiteboard are unlocked and editable
+          if (el.locked) {
+            return { ...el, locked: false };
+          }
+          return el;
+        });
+
+      doc.transact(() => {
+        const yArray = doc.getArray("elements");
+        yArray.delete(0, yArray.length);
+        for (const el of canonical) {
+          yArray.push([el]);
+        }
+      }, "local-canvas-edit");
+    },
+    [doc, isScrubbing]
+  );
+
   // When timeline scrubber is active, display snapshot preview elements instead
   const displayedElements = isScrubbing && previewElements ? previewElements : elements;
 
@@ -220,5 +316,6 @@ export function useBoardSync(boardId: string, wsToken?: string, currentUser?: { 
     approveProposal,
     dismissProposal,
     sendTextUtterance,
+    updateElements,
   };
 }

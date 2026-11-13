@@ -10,7 +10,7 @@ import type {
   ProposalRecord,
   TranscriptTurn,
 } from "@boardmind/ai-core";
-import { AgentPipeline } from "@boardmind/ai-core";
+import { AgentPipeline, LLMRouter, createSeedDiagram } from "@boardmind/ai-core";
 import { SnapshotStorage } from "./snapshotStorage.js";
 
 const MESSAGE_SYNC = 0;
@@ -33,7 +33,8 @@ export class RoomManager {
 
   constructor(
     private snapshotStorage: SnapshotStorage,
-    private agentPipeline: AgentPipeline
+    private agentPipeline: AgentPipeline,
+    private router?: LLMRouter
   ) {
     // 30s debounced SQLite Snapshot Writer loop
     this.persistenceInterval = setInterval(() => {
@@ -65,7 +66,7 @@ export class RoomManager {
       this.snapshotStorage.loadRoomStateFromDb(boardId, doc);
 
       // Ensure standard schema structures
-      doc.getArray("elements");
+      const elementsArray = doc.getArray("elements");
       doc.getMap("appState");
       doc.getArray("transcript");
       doc.getMap("proposals");
@@ -75,6 +76,17 @@ export class RoomManager {
         meta.set("boardId", boardId);
         meta.set("schemaVersion", 1);
         meta.set("proposalsUsedInSession", 0);
+      }
+
+      // If board is empty, auto-seed with canonical architecture diagram
+      if (elementsArray.length === 0) {
+        const seedElements = createSeedDiagram();
+        doc.transact(() => {
+          for (const el of seedElements) {
+            elementsArray.push([el]);
+          }
+        });
+        this.snapshotStorage.saveRoomStateToDb(boardId, doc);
       }
 
       const roomConns = new Map<WebSocket, { userId: string; role: "owner" | "editor" | "viewer"; userName?: string }>();
@@ -90,6 +102,20 @@ export class RoomManager {
 
       // Set up transcript observer for AI pipeline
       this.attachTranscriptObserver(newRoom);
+
+      // Document changes broadcast to all clients in the room
+      doc.on("update", (update: Uint8Array, origin: any) => {
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, MESSAGE_SYNC);
+        syncProtocol.writeUpdate(encoder, update);
+        const msg = encoding.toUint8Array(encoder);
+
+        for (const [conn] of roomConns.entries()) {
+          if (conn !== origin && conn.readyState === WebSocket.OPEN) {
+            conn.send(msg);
+          }
+        }
+      });
 
       // Awareness changes broadcast
       awareness.on("update", ({ added, updated, removed }: any, origin: any) => {
@@ -124,17 +150,21 @@ export class RoomManager {
   private attachTranscriptObserver(room: RoomContext): void {
     const transcriptArray = room.doc.getArray("transcript");
     transcriptArray.observe(() => {
+      console.log(`[RoomManager] Transcript updated for board ${room.boardId}, turns: ${transcriptArray.length}`);
       if (room.aiDebounceTimer) {
         clearTimeout(room.aiDebounceTimer);
       }
       room.aiDebounceTimer = setTimeout(() => {
         this.processTranscriptBatch(room);
-      }, 4000);
+      }, 1200);
     });
   }
 
   private async processTranscriptBatch(room: RoomContext): Promise<void> {
-    if (room.evaluatingAi) return;
+    if (room.evaluatingAi) {
+      console.log(`[RoomManager] Already evaluating AI for board ${room.boardId}, skipping`);
+      return;
+    }
 
     const transcriptArray = room.doc.getArray("transcript");
     const allTurns: TranscriptTurn[] = [];
@@ -146,9 +176,14 @@ export class RoomManager {
     }
 
     const unprocessed = allTurns.filter((t) => !t.processedByAgent);
-    if (unprocessed.length === 0) return;
+    if (unprocessed.length === 0) {
+      console.log(`[RoomManager] No unprocessed turns for board ${room.boardId}`);
+      return;
+    }
 
-    const recent = allTurns.filter((t) => t.processedByAgent).slice(-3);
+    console.log(`[RoomManager] Evaluating ${unprocessed.length} unprocessed turns for board ${room.boardId}`);
+
+    const recent = allTurns.filter((t) => t.processedByAgent).slice(-8);
 
     // Read current raw elements from Y.Array('elements')
     const elementsArray = room.doc.getArray("elements");
@@ -169,6 +204,13 @@ export class RoomManager {
         transcriptDelta: unprocessed,
         recentTurns: recent,
         rawElements,
+      });
+
+      console.log(`[RoomManager] AI evaluation result:`, {
+        status: result.status,
+        reason: result.reason,
+        proposalId: result.proposalId,
+        provider: result.providerUsed,
       });
 
       if (result.status === "proposed" && result.proposalId && result.mutations && result.ghostResult) {
@@ -192,7 +234,21 @@ export class RoomManager {
           propMap.set(k, v);
         }
 
+        // Create AI response turn in chat
+        const aiTurnMap = new Y.Map();
+        aiTurnMap.set("id", `turn_ai_${Date.now()}`);
+        aiTurnMap.set("speakerId", "agent_boardmind");
+        aiTurnMap.set("speakerName", "BoardMind AI");
+        aiTurnMap.set(
+          "text",
+          `I have designed the architecture on the whiteboard for: **${result.reason || "Architectural modification"}**.\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve"** at the top to merge it into the diagram!`
+        );
+        aiTurnMap.set("timestamp", Date.now());
+        aiTurnMap.set("source", "agent");
+        aiTurnMap.set("processedByAgent", true);
+
         room.doc.transact(() => {
+          transcriptArray.push([aiTurnMap]);
           proposalsMap.set(result.proposalId!, propMap);
 
           // Mark turns processed
@@ -210,18 +266,93 @@ export class RoomManager {
           meta.set("proposalsUsedInSession", used + 1);
         });
 
-        // Broadcast CONTROL_PROPOSE_DECISION (0x10)
-        this.broadcastControlMessage(room, {
-          type: "PROPOSAL_CREATED",
+        // Broadcast proposal created via awareness to avoid crashing y-websocket client binary decoder
+        room.awareness.setLocalStateField("lastProposal", {
           proposalId: result.proposalId,
           centroid: result.ghostResult.centroid,
+          timestamp: Date.now(),
         });
-      } else if (result.status === "rejected_validation") {
-        this.broadcastControlMessage(room, {
-          type: "AI_NOTICE",
-          level: "warn",
-          message: `AI skipped an invalid diagram edit: ${result.reason}`,
+      } else {
+        // Conversational AI response for questions or architecture discussion
+        const lastUserTurn = unprocessed[unprocessed.length - 1];
+        const userText = lastUserTurn?.text || "";
+
+        let replyText = "";
+        if (this.router) {
+          try {
+            // Include recent conversation context properly partitioned into user and assistant roles
+            const historyMessages = recent.slice(-8).map((r) => {
+              if (r.speakerId === "agent_boardmind") {
+                return { role: "assistant" as const, content: r.text };
+              }
+              return { role: "user" as const, content: `${r.speakerName}: ${r.text}` };
+            });
+
+            const chatRes = await this.router.complete({
+              jsonMode: false,
+              messages: [
+                {
+                  role: "system",
+                  content: `You are BoardMind AI, an elite Principal Systems Architect on an interactive architectural design whiteboard.
+Current diagram elements: ${rawElements.map((e) => e.customData?.label || e.text || e.id).filter(Boolean).slice(0, 20).join(", ") || "Empty canvas"}.
+
+Guidelines:
+- Act as a deeply knowledgeable, collaborative systems architect colleague.
+- When the user asks about designing any system (e.g. Uber clone, social network, e-commerce, real-time gaming, financial ledger):
+  • Break down the core architectural patterns (Event-Driven, CQRS, Microservices, Caching, Sharding).
+  • Recommend the essential building blocks (API Gateway, Core Domain Microservices, Databases, Caches, Event Brokers).
+  • Discuss real-world trade-offs (latency, scalability, data consistency, idempotency).
+  • Offer to draw the agreed design onto the whiteboard canvas (e.g. "Whenever you're ready, say 'draw this' or 'create the architecture' and I'll lay out the components and data flows on our board!").
+- Keep paragraphs structured, technical, clear, and engaging. Avoid robotic boilerplate.`,
+                },
+                ...historyMessages,
+                { role: "user" as const, content: `${lastUserTurn?.speakerName || "Engineer"}: ${userText}` },
+              ],
+            });
+            replyText = chatRes.content;
+            if (replyText.startsWith("{") && replyText.includes("reason")) {
+              try {
+                const parsed = JSON.parse(replyText);
+                if (parsed.reason) replyText = parsed.reason;
+              } catch {
+                // Keep raw text
+              }
+            }
+          } catch (err: any) {
+            console.error("[RoomManager] Chat completion error:", err.message);
+            replyText = `I analyzed your design remark: "${userText}". To compile changes to the whiteboard, mention components or say "draw this architecture" (e.g. "Add a Redis cache before PostgreSQL", "Add a Kafka message queue", or "Draw the Uber architecture").`;
+          }
+        } else {
+          replyText = `I analyzed your design remark: "${userText}". To compile changes to the whiteboard, mention components or say "draw this architecture" (e.g. "Add a Redis cache before PostgreSQL", "Add a Kafka message queue", or "Draw the Uber architecture").`;
+        }
+        
+        const aiTurnMap = new Y.Map();
+        aiTurnMap.set("id", `turn_ai_${Date.now()}`);
+        aiTurnMap.set("speakerId", "agent_boardmind");
+        aiTurnMap.set("speakerName", "BoardMind AI");
+        aiTurnMap.set("text", replyText);
+        aiTurnMap.set("timestamp", Date.now());
+        aiTurnMap.set("source", "agent");
+        aiTurnMap.set("processedByAgent", true);
+
+        room.doc.transact(() => {
+          transcriptArray.push([aiTurnMap]);
+          for (let i = 0; i < transcriptArray.length; i++) {
+            const item: any = transcriptArray.get(i);
+            const id = item?.get ? item.get("id") : item?.id;
+            if (unprocessed.some((u) => u.id === id)) {
+              if (item?.set) item.set("processedByAgent", true);
+            }
+          }
         });
+
+        if (result.status === "rejected_validation") {
+          room.awareness.setLocalStateField("aiNotice", {
+            level: "warn",
+            message: `AI skipped an invalid diagram edit: ${result.reason}`,
+            timestamp: Date.now(),
+          });
+        }
       }
     } catch (err: any) {
       console.warn(`[RoomManager] AI evaluation error: ${err.message}`);
@@ -232,11 +363,11 @@ export class RoomManager {
   }
 
   private broadcastControlMessage(room: RoomContext, msg: Record<string, any>): void {
-    const jsonStr = JSON.stringify(msg);
-    for (const [conn] of room.conns.entries()) {
-      if (conn.readyState === WebSocket.OPEN) {
-        conn.send(jsonStr);
-      }
+    // Kept for backward compatibility but safe: send via awareness if needed
+    if (msg.type === "PROPOSAL_CREATED") {
+      room.awareness.setLocalStateField("lastProposal", msg);
+    } else if (msg.type === "AI_NOTICE") {
+      room.awareness.setLocalStateField("aiNotice", msg);
     }
   }
 

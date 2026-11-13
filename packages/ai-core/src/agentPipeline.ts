@@ -81,13 +81,16 @@ export class AgentPipeline {
     // ==========================================
     // STAGE 1: DECISION DETECTION
     // ==========================================
-    const stage1System = `You are a senior software architecture observer listening to a live engineering design review.
-Your sole task is to determine whether the latest conversation segment contains a concrete, actionable architectural decision that should change the system diagram.
+    const stage1System = `You are a Senior Principal Systems Architect evaluating an interactive design review.
+Your task is to determine whether the user/participants have explicitly agreed on or instructed to CREATE, MODIFY, DRAW, or UPDATE the architecture diagram.
 
 Rules:
-1. Return is_decision: true ONLY when participants agree on or explicitly decide to add, remove, connect, disconnect, rename, split, or insert a system component or data flow (e.g., "Let's put Redis in front of Postgres", "We should drop Kafka and use SQS", "Add an API Gateway").
-2. Return is_decision: false for small talk, open-ended questions without resolution ("Should we use Redis or Memcached?"), explanations of existing boxes, or off-topic remarks.
-3. Respond strictly with valid JSON matching this schema:
+1. Return is_decision: true (confidence: 1.0) when:
+   - The user asks to draw, generate, render, or create an architecture on the board (e.g. "just draw the architecture", "just draw the arcitecture", "draw that", "draw it", "create the diagram", "modify the diagram to...", "alright update", "put this architecture on the board", "generate the diagram").
+   - Participants agree on or explicitly instruct to add, remove, connect, disconnect, rename, or insert system components or data flows (e.g., "Let's put Redis in front of Postgres", "Add Kafka message queue", "Remove redundant cache", "Add an Auth microservice").
+2. Return is_decision: false when:
+   - The user is asking exploratory questions, brainstorming, or discussing trade-offs without asking to draw or modify the diagram yet (e.g. "What is the best design for an Uber clone?", "Should we use Kafka or RabbitMQ?").
+3. Respond strictly with valid JSON:
 {"is_decision": boolean, "confidence": number, "reason": string}`;
 
     const nodesSummary = compactGraph.nodes
@@ -119,6 +122,7 @@ ${deltaContext}`;
     let stage1Response;
     try {
       stage1Response = await this.router.complete({
+        jsonMode: true,
         messages: [
           { role: "system", content: stage1System },
           { role: "user", content: stage1User },
@@ -131,8 +135,39 @@ ${deltaContext}`;
     let decision;
     try {
       decision = extractAndValidateJson(stage1Response.content, DecisionDetectionSchema);
-    } catch (err: any) {
-      return { status: "error", reason: `Malformed Stage 1 JSON: ${err.message}` };
+    } catch {
+      // Fallback: check if transcript delta contains clear draw/modify commands
+      const deltaLower = deltaContext.toLowerCase();
+      const isDirectCommand =
+        deltaLower.includes("draw") ||
+        deltaLower.includes("arcitecture") ||
+        deltaLower.includes("architecture") ||
+        deltaLower.includes("create") ||
+        deltaLower.includes("modify") ||
+        deltaLower.includes("update") ||
+        deltaLower.includes("add") ||
+        deltaLower.includes("remove");
+      decision = {
+        is_decision: isDirectCommand,
+        confidence: isDirectCommand ? 0.95 : 0.3,
+        reason: isDirectCommand
+          ? "Direct architectural drawing instruction detected"
+          : "Conversational question or discussion",
+      };
+    }
+
+    // Safety override: if the user's latest text explicitly says "draw", "modify diagram", or "alright update", enforce is_decision: true
+    const latestTextLower = transcriptDelta.map((t) => t.text.toLowerCase()).join(" ");
+    if (
+      /\b(draw|arcitecture|architecture|modify\s+diagram|update\s+diagram|create\s+diagram|alright\s+update|put\s+it\s+on\s+the\s+board)\b/i.test(
+        latestTextLower
+      )
+    ) {
+      decision.is_decision = true;
+      decision.confidence = 1.0;
+      if (!decision.reason || decision.reason.includes("No architectural decision")) {
+        decision.reason = `Compile and render requested architecture on whiteboard: "${latestTextLower.slice(0, 80)}"`;
+      }
     }
 
     if (!decision.is_decision || decision.confidence < 0.75) {
@@ -161,12 +196,16 @@ Allowed operations (use ONLY these 8 types):
 Constraints:
 - Reference existing node and edge IDs accurately from CURRENT DIAGRAM GRAPH.
 - Prefer "insert_between" when placing middleware/caches/queues along an existing connection.
+- If the decision is to draw or generate a newly agreed system architecture (e.g. for an app discussed in the conversation like Uber, E-commerce, Chat, Booking, Streaming, etc.), generate a complete professional set of add_node and add_edge operations with standard components (Client/Apps -> API Gateway -> Microservices -> Databases/Caches/Queues) with descriptive labels and protocols.
 - Output strictly valid JSON: {"operations": EditIntent[]}`;
 
     const stage2User = `CONFIRMED DECISION:
 "${decision.reason}"
 
-SUPPORTING TRANSCRIPT:
+FULL RECENT CONVERSATION CONTEXT:
+${previousContext || "None"}
+
+LATEST TRANSCRIPT DELTA:
 ${deltaContext}
 
 CURRENT DIAGRAM GRAPH (JSON):
@@ -175,6 +214,7 @@ ${JSON.stringify(compactGraph, null, 2)}`;
     let stage2Response;
     try {
       stage2Response = await this.router.complete({
+        jsonMode: true,
         messages: [
           { role: "system", content: stage2System },
           { role: "user", content: stage2User },
@@ -191,6 +231,7 @@ ${JSON.stringify(compactGraph, null, 2)}`;
       // Retry once on malformed JSON
       try {
         const retryResponse = await this.router.complete({
+          jsonMode: true,
           messages: [
             { role: "system", content: stage2System },
             { role: "user", content: stage2User },
@@ -216,7 +257,7 @@ ${JSON.stringify(compactGraph, null, 2)}`;
     // ==========================================
     // STAGE 4: DETERMINISTIC VALIDATOR
     // ==========================================
-    const validation = validateProposal(rawElements, plannedMutations);
+    const validation = validateProposal(rawElements, plannedMutations, { allowOrphanNodes: true });
 
     const proposalId = uuidv4();
     const now = Date.now();

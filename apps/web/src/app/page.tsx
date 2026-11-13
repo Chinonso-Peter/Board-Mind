@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { Plus, LayoutDashboard, Cpu, ArrowRight, ShieldCheck, RefreshCw } from "lucide-react";
+import { Plus, LayoutDashboard, Cpu, ArrowRight, ShieldCheck, RefreshCw, LogOut, User } from "lucide-react";
+import { useSession, signOut } from "next-auth/react";
 
 interface BoardItem {
   id: string;
@@ -22,6 +23,7 @@ interface ProviderStatus {
 }
 
 export default function DashboardPage() {
+  const { data: session, status: authStatus } = useSession();
   const [boards, setBoards] = useState<BoardItem[]>([]);
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,52 +81,82 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
+    <div className="min-h-screen min-h-[100dvh] bg-slate-50 text-slate-900 flex flex-col touch-scroll">
       {/* Top Navbar */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm shadow-md">
+      <header className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between sticky top-0 z-20 shadow-2xs">
+        <div className="flex items-center space-x-2.5 sm:space-x-3">
+          <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-xs sm:text-sm shadow-md">
             BM
           </div>
           <div>
-            <span className="font-bold text-base text-slate-800 tracking-tight">BoardMind</span>
-            <span className="ml-2 text-xs font-medium px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full border border-indigo-200">
+            <span className="font-bold text-sm sm:text-base text-slate-800 tracking-tight">BoardMind</span>
+            <span className="ml-1.5 sm:ml-2 text-[10px] sm:text-xs font-medium px-1.5 sm:px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full border border-indigo-200">
               v1.0.0
             </span>
           </div>
         </div>
 
-        <div className="flex items-center space-x-4">
-          <Link
-            href="/login"
-            className="text-xs font-semibold text-slate-600 hover:text-indigo-600 transition-colors"
-          >
-            Sign In
-          </Link>
-          <Link
-            href="/register"
-            className="text-xs font-semibold px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors shadow-sm"
-          >
-            Register
-          </Link>
+        <div className="flex items-center space-x-2 sm:space-x-3">
+          {session?.user ? (
+            <div className="flex items-center space-x-2 sm:space-x-3">
+              <div className="flex items-center space-x-2 bg-slate-100 hover:bg-slate-200/70 transition-colors py-1 px-2.5 rounded-full border border-slate-200">
+                <div className="w-6 h-6 rounded-full bg-indigo-600 text-white font-bold text-xs flex items-center justify-center shadow-xs">
+                  {(session.user.name || session.user.email || "U").charAt(0).toUpperCase()}
+                </div>
+                <div className="flex flex-col text-left">
+                  <span className="text-xs font-semibold text-slate-800 leading-tight">
+                    {session.user.name || session.user.email?.split("@")[0] || "Architect"}
+                  </span>
+                  <span className="text-[10px] text-slate-500 leading-tight">
+                    {session.user.email || "Signed In"}
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={() => signOut({ callbackUrl: "/" })}
+                title="Sign out"
+                className="flex items-center space-x-1 text-xs font-semibold text-slate-500 hover:text-rose-600 transition-colors p-1.5 rounded-lg hover:bg-slate-100 touch-manipulation"
+              >
+                <LogOut className="w-4 h-4" />
+                <span className="hidden sm:inline">Sign out</span>
+              </button>
+            </div>
+          ) : authStatus === "loading" ? (
+            <div className="w-24 h-7 bg-slate-100 rounded-lg animate-pulse" />
+          ) : (
+            <>
+              <Link
+                href="/login"
+                className="text-xs font-semibold text-slate-600 hover:text-indigo-600 transition-colors px-2 py-1"
+              >
+                Sign In
+              </Link>
+              <Link
+                href="/register"
+                className="text-xs font-semibold px-2.5 sm:px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors shadow-sm"
+              >
+                Register
+              </Link>
+            </>
+          )}
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-6 md:p-8 space-y-8">
+      <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 md:p-8 space-y-6 sm:space-y-8">
         {/* Banner Section */}
-        <section className="bg-gradient-to-r from-indigo-900 via-indigo-800 to-slate-900 rounded-2xl p-6 md:p-8 text-white shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+        <section className="bg-gradient-to-r from-indigo-900 via-indigo-800 to-slate-900 rounded-xl sm:rounded-2xl p-5 sm:p-6 md:p-8 text-white shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-5 sm:gap-6">
           <div className="space-y-2 max-w-xl">
-            <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight">
+            <h2 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight">
               Real-Time AI Architecture Whiteboard
             </h2>
-            <p className="text-slate-300 text-xs md:text-sm leading-relaxed">
+            <p className="text-slate-300 text-xs sm:text-sm leading-relaxed">
               Passively listens to live engineering design reviews, detects architectural decisions,
               and proposes non-destructive diagram ghost overlays with full time-travel checkpoints.
             </p>
           </div>
 
-          <form onSubmit={handleCreateBoard} className="flex items-center space-x-2 w-full md:w-auto">
+          <form onSubmit={handleCreateBoard} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full md:w-auto">
             <input
               type="text"
               placeholder="e.g. Payments Microservices"
@@ -135,7 +167,7 @@ export default function DashboardPage() {
             <button
               type="submit"
               disabled={creating || !newBoardName.trim()}
-              className="flex items-center space-x-1.5 px-4 py-2 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-40 text-white font-semibold text-sm rounded-lg transition-colors whitespace-nowrap shadow-md"
+              className="flex items-center justify-center space-x-1.5 px-4 py-2 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-40 text-white font-semibold text-sm rounded-lg transition-colors whitespace-nowrap shadow-md touch-manipulation"
             >
               <Plus className="w-4 h-4" />
               <span>{creating ? "Creating..." : "New Board"}</span>

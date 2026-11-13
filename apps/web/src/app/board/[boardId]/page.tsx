@@ -1,19 +1,21 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useParams } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { Canvas } from "@/components/Canvas";
 
 export default function BoardRoomPage() {
   const params = useParams();
   const boardId = params?.boardId as string;
+  const { data: session } = useSession();
 
   const [board, setBoard] = useState<{ id: string; name: string } | null>(null);
   const [wsToken, setWsToken] = useState<string | undefined>(undefined);
-  const [currentUser] = useState(() => ({
-    id: `usr_${Math.random().toString(36).slice(2, 8)}`,
-    name: "Staff Architect",
-  }));
+  const currentUser = useMemo(() => ({
+    id: (session?.user as any)?.id || session?.user?.email || `usr_${Math.random().toString(36).slice(2, 8)}`,
+    name: session?.user?.name || session?.user?.email?.split("@")[0] || "Staff Architect",
+  }), [session]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {

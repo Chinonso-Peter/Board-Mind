@@ -15,6 +15,7 @@ export interface LLMProvider {
 export interface LLMRequest {
   messages: ChatCompletionMessageParam[];
   preferredStartIndex?: number;
+  jsonMode?: boolean;
 }
 
 export interface LLMResponse {
@@ -27,16 +28,18 @@ export interface LLMResponse {
 
 export function createDefaultProviders(): LLMProvider[] {
   const groqKey = process.env.GROQ_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const deepseekKey = process.env.DEEPSEEK_API_KEY;
   const cfKey = process.env.CLOUDFLARE_API_KEY;
   const cfAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
   const nvKey = process.env.NVIDIA_API_KEY;
   const zaiKey = process.env.ZAI_API_KEY;
-  const geminiKey = process.env.GEMINI_API_KEY;
 
   return [
     {
       name: "groq",
-      model: "gpt-oss-120b",
+      model: process.env.GROQ_MODEL || "qwen/qwen3.8-27b",
       maxRPM: 30,
       maxRPD: 1000,
       baseURL: "https://api.groq.com/openai/v1",
@@ -50,8 +53,53 @@ export function createDefaultProviders(): LLMProvider[] {
         : null,
     },
     {
+      name: "openai",
+      model: "gpt-4o-mini",
+      maxRPM: 60,
+      maxRPD: 2000,
+      baseURL: "https://api.openai.com/v1",
+      client: openaiKey && openaiKey !== "missing"
+        ? new OpenAI({
+            baseURL: "https://api.openai.com/v1",
+            apiKey: openaiKey,
+            timeout: 5_000,
+            maxRetries: 0,
+          })
+        : null,
+    },
+    {
+      name: "gemini",
+      model: "gemini-1.5-flash",
+      maxRPM: 15,
+      maxRPD: 1500,
+      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+      client: geminiKey && geminiKey !== "missing" && geminiKey.startsWith("AIzaSy")
+        ? new OpenAI({
+            baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+            apiKey: geminiKey,
+            timeout: 5_000,
+            maxRetries: 0,
+          })
+        : null,
+    },
+    {
+      name: "deepseek",
+      model: "deepseek-chat",
+      maxRPM: 60,
+      maxRPD: 2000,
+      baseURL: "https://api.deepseek.com",
+      client: deepseekKey && deepseekKey !== "missing"
+        ? new OpenAI({
+            baseURL: "https://api.deepseek.com",
+            apiKey: deepseekKey,
+            timeout: 15_000,
+            maxRetries: 0,
+          })
+        : null,
+    },
+    {
       name: "cloudflare",
-      model: "@cf/openai/gpt-oss-120b",
+      model: "@cf/meta/llama-3.1-70b-instruct",
       maxRPM: 300,
       maxRPD: 10000,
       baseURL: `https://api.cloudflare.com/client/v4/accounts/${cfAccount || "acct"}/ai/v1`,
@@ -89,21 +137,6 @@ export function createDefaultProviders(): LLMProvider[] {
         ? new OpenAI({
             baseURL: "https://api.z.ai/api/paas/v4",
             apiKey: zaiKey,
-            timeout: 15_000,
-            maxRetries: 0,
-          })
-        : null,
-    },
-    {
-      name: "gemini",
-      model: "gemini-3.5-flash-lite",
-      maxRPM: 15,
-      maxRPD: 500,
-      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
-      client: geminiKey && geminiKey !== "missing"
-        ? new OpenAI({
-            baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
-            apiKey: geminiKey,
             timeout: 15_000,
             maxRetries: 0,
           })
@@ -178,7 +211,7 @@ export class LLMRouter {
   }
 
   private loadDailyUsageFromDB(): void {
-    if (!this.db) return;
+    if (!this.db || typeof this.db.prepare !== "function") return;
     this.ensureCurrentUtcDay();
     try {
       const stmt = this.db.prepare(
@@ -201,7 +234,7 @@ export class LLMRouter {
     const updatedRequests = (this.dailyUsage.get(providerName) ?? 0) + 1;
     this.dailyUsage.set(providerName, updatedRequests);
 
-    if (this.db) {
+    if (this.db && typeof this.db.prepare === "function") {
       try {
         const upsert = this.db.prepare(`
           INSERT INTO provider_usage (provider_name, date, requests_used, tokens_used)
@@ -294,10 +327,31 @@ export class LLMRouter {
 
         try {
           this.recordRpmHit(provider.name);
+          const isJson =
+            request.jsonMode === true ||
+            (request.jsonMode !== false &&
+              request.messages.some(
+                (m) => typeof m.content === "string" && m.content.toLowerCase().includes("json")
+              ));
+
+          let messages = request.messages;
+          if (isJson && provider.name === "groq") {
+            const hasJsonWord = messages.some(
+              (m) => typeof m.content === "string" && m.content.toLowerCase().includes("json")
+            );
+            if (!hasJsonWord && messages.length > 0) {
+              const first = messages[0];
+              messages = [
+                { ...first, content: `${first.content} (Respond in JSON)` } as any,
+                ...messages.slice(1),
+              ];
+            }
+          }
+
           const response = await provider.client.chat.completions.create({
             model: provider.model,
-            messages: request.messages,
-            response_format: { type: "json_object" },
+            messages,
+            ...(isJson ? { response_format: { type: "json_object" } } : {}),
             temperature: 0.2,
             max_tokens: 2048,
           });
@@ -350,17 +404,47 @@ export class LLMRouter {
   private synthesizeLocalResponse(messages: ChatCompletionMessageParam[]): LLMResponse {
     const systemMsg = messages.find((m) => m.role === "system")?.content?.toString() || "";
     const userMsg = messages.find((m) => m.role === "user")?.content?.toString() || "";
+    const lower = userMsg.toLowerCase();
 
     // Stage 1: Decision detection
-    if (systemMsg.includes("sole task is to determine whether the latest conversation segment contains a concrete")) {
-      const lower = userMsg.toLowerCase();
-      const decisionPhrases = ["let's add", "let's put", "add ", "use redis", "use kafka", "replace", "introduce", "we should use", "remove"];
+    if (
+      systemMsg.includes("is_decision") ||
+      systemMsg.includes("Senior Principal Systems Architect") ||
+      systemMsg.includes("sole task")
+    ) {
+      const decisionPhrases = [
+        "add", "put", "insert", "create", "use", "introduce", "connect",
+        "replace", "remove", "delete", "cache", "redis", "kafka", "queue",
+        "auth", "database", "postgres", "mongodb", "elasticsearch", "gateway",
+        "worker", "service", "microservice", "broker", "storage", "s3",
+        "rabbitmq", "dynamodb", "sqs", "notification", "inventory", "payment",
+        "cdn", "cloudflare", "design", "draw", "architecture", "arcitecture",
+        "modify", "update", "alright", "diagram", "let's", "we should"
+      ];
       const isDecision = decisionPhrases.some((phrase) => lower.includes(phrase));
+
+      let decisionTopic = "Architectural component modification";
+      if (lower.includes("calculator")) decisionTopic = "Compile Calculator Microservice Architecture";
+      else if (lower.includes("uber") || lower.includes("ride")) decisionTopic = "Compile Ride Hailing Architecture";
+      else if (lower.includes("draw") || lower.includes("diagram") || lower.includes("update") || lower.includes("modify")) decisionTopic = "Compile Architecture Diagram on Whiteboard";
+      else if (lower.includes("redis") || lower.includes("cache")) decisionTopic = "Add Redis Cache to accelerate data access and cache sessions";
+      else if (lower.includes("kafka") || lower.includes("queue") || lower.includes("rabbitmq") || lower.includes("sqs")) decisionTopic = "Add Event Message Queue to decouple asynchronous workflows";
+      else if (lower.includes("auth")) decisionTopic = "Add Auth Microservice for centralized authentication & JWT tokens";
+      else if (lower.includes("elasticsearch") || lower.includes("search")) decisionTopic = "Add Elasticsearch cluster for low-latency full-text catalog search";
+      else if (lower.includes("mongodb") || lower.includes("dynamo")) decisionTopic = "Add NoSQL document database for high-throughput flexible schema data";
+      else if (lower.includes("postgres") || lower.includes("database") || lower.includes("sql")) decisionTopic = "Add PostgreSQL database cluster with read replicas for persistent transactions";
+      else if (lower.includes("s3") || lower.includes("storage") || lower.includes("blob")) decisionTopic = "Add Object Storage (S3) for persistent media and asset hosting";
+      else if (lower.includes("gateway") || lower.includes("ingress")) decisionTopic = "Add API Gateway for TLS termination, routing, and rate-limiting";
+      else if (lower.includes("notification") || lower.includes("email")) decisionTopic = "Add Notification Worker to asynchronously dispatch emails and push notifications";
+      else if (lower.includes("payment") || lower.includes("stripe")) decisionTopic = "Connect External Payment Gateway (Stripe) for secure idempotent transaction processing";
+      else if (lower.includes("cdn") || lower.includes("cloudflare")) decisionTopic = "Add Edge CDN (Cloudflare) for global caching and DDoS mitigation";
+      else if (lower.includes("remove") || lower.includes("delete")) decisionTopic = "Remove specified architectural component from the diagram";
+      else if (lower.includes("worker") || lower.includes("batch")) decisionTopic = "Add Background Worker for batch processing tasks";
 
       const result = {
         is_decision: isDecision,
-        confidence: isDecision ? 0.92 : 0.2,
-        reason: isDecision ? "Synthesized decision detected from engineering keywords in transcript." : "No architectural decision detected.",
+        confidence: isDecision ? 0.95 : 0.2,
+        reason: isDecision ? decisionTopic : "No architectural decision detected.",
       };
       return {
         content: JSON.stringify(result),
@@ -371,56 +455,153 @@ export class LLMRouter {
       };
     }
 
-    // Stage 2: Intent parsing
-    if (systemMsg.includes("architectural diagram compiler")) {
-      const lower = userMsg.toLowerCase();
+    // Stage 2: Intent parsing (Graph edit operations)
+    if (systemMsg.includes("architectural diagram compiler") || systemMsg.includes("Stage 2")) {
       const operations: any[] = [];
 
-      let anchorNodeId: string | undefined;
+      let graph: { nodes: any[]; edges: any[] } = { nodes: [], edges: [] };
       try {
         const jsonMatch = userMsg.match(/CURRENT DIAGRAM GRAPH \(JSON\):\s*([\s\S]*)/);
         if (jsonMatch && jsonMatch[1]) {
-          const graph = JSON.parse(jsonMatch[1].trim());
-          if (graph.nodes && graph.nodes.length > 0) {
-            anchorNodeId = graph.nodes[0].id;
-          }
+          graph = JSON.parse(jsonMatch[1].trim());
         }
       } catch {
-        // Ignore
+        // Ignore JSON parse error
       }
 
-      if (lower.includes("redis") && lower.includes("cache")) {
-        operations.push({
-          op: "add_node",
-          label: "Redis Cache",
-          nodeType: "cache",
-          positionHint: "right_of",
-          anchorNodeId,
-        });
-      } else if (lower.includes("postgres") || lower.includes("database")) {
-        operations.push({
-          op: "add_node",
-          label: "PostgreSQL",
-          nodeType: "database",
-          positionHint: "below",
-          anchorNodeId,
-        });
-      } else if (lower.includes("gateway")) {
-        operations.push({
-          op: "add_node",
-          label: "API Gateway",
-          nodeType: "gateway",
-          positionHint: "left_of",
-          anchorNodeId,
-        });
+      if (lower.includes("calculator")) {
+        operations.push(
+          { op: "add_node", label: "Calculator Web/Mobile Client", nodeType: "external", positionHint: "center" },
+          { op: "add_node", label: "API Gateway", nodeType: "gateway", positionHint: "right_of" },
+          { op: "add_node", label: "Calculation Engine Service", nodeType: "service", positionHint: "right_of" },
+          { op: "add_node", label: "Result Cache (Redis)", nodeType: "cache", positionHint: "above" },
+          { op: "add_node", label: "Calculation History DB (Postgres)", nodeType: "database", positionHint: "below" },
+          { op: "add_edge", sourceId: "Calculator Web/Mobile Client", targetId: "API Gateway", label: "HTTPS / REST" },
+          { op: "add_edge", sourceId: "API Gateway", targetId: "Calculation Engine Service", label: "gRPC" },
+          { op: "add_edge", sourceId: "Calculation Engine Service", targetId: "Result Cache (Redis)", label: "Cache Lookup" },
+          { op: "add_edge", sourceId: "Calculation Engine Service", targetId: "Calculation History DB (Postgres)", label: "SQL" }
+        );
+      } else if (!graph.nodes || graph.nodes.length === 0 || lower.includes("draw") || lower.includes("diagram") || lower.includes("create")) {
+        operations.push(
+          { op: "add_node", label: "Client Application", nodeType: "external", positionHint: "center" },
+          { op: "add_node", label: "API Gateway", nodeType: "gateway", positionHint: "right_of" },
+          { op: "add_node", label: "Core Application Service", nodeType: "service", positionHint: "right_of" },
+          { op: "add_node", label: "In-Memory Cache (Redis)", nodeType: "cache", positionHint: "above" },
+          { op: "add_node", label: "Primary Database (Postgres)", nodeType: "database", positionHint: "below" },
+          { op: "add_edge", sourceId: "Client Application", targetId: "API Gateway", label: "HTTPS / REST" },
+          { op: "add_edge", sourceId: "API Gateway", targetId: "Core Application Service", label: "gRPC" },
+          { op: "add_edge", sourceId: "Core Application Service", targetId: "In-Memory Cache (Redis)", label: "Cache Read/Write" },
+          { op: "add_edge", sourceId: "Core Application Service", targetId: "Primary Database (Postgres)", label: "SQL" }
+        );
       } else {
-        operations.push({
-          op: "add_node",
-          label: "New Service",
-          nodeType: "service",
-          positionHint: "right_of",
-          anchorNodeId,
-        });
+        // Find relevant anchor nodes
+        const checkoutNode = graph.nodes?.find((n: any) => n.id.includes("checkout") || n.label.toLowerCase().includes("checkout"));
+        const gatewayNode = graph.nodes?.find((n: any) => n.id.includes("gateway") || n.label.toLowerCase().includes("gateway"));
+        const dbNode = graph.nodes?.find((n: any) => n.id.includes("postgres") || n.label.toLowerCase().includes("postgres") || n.id.includes("db"));
+        const clientNode = graph.nodes?.find((n: any) => n.id.includes("client") || n.label.toLowerCase().includes("client"));
+        const anchorNodeId = (checkoutNode || dbNode || gatewayNode || graph.nodes?.[0])?.id;
+
+        // Handle removals
+        if (lower.includes("remove") || lower.includes("delete")) {
+          const targetNode = graph.nodes?.find((n: any) => {
+            const l = n.label.toLowerCase();
+            if (lower.includes("stripe") && l.includes("stripe")) return true;
+            if (lower.includes("redis") && l.includes("redis")) return true;
+            if (lower.includes("kafka") && l.includes("kafka")) return true;
+            if (lower.includes("postgres") && l.includes("postgres")) return true;
+            if (lower.includes("gateway") && l.includes("gateway")) return true;
+            return false;
+          });
+          if (targetNode) {
+            operations.push({ op: "remove_node", id: targetNode.id });
+          }
+        }
+        // Handle insert_between
+        else if ((lower.includes("between") || lower.includes("in front of")) && checkoutNode && dbNode) {
+          operations.push({
+            op: "insert_between",
+            sourceId: checkoutNode.id,
+            targetId: dbNode.id,
+            newNode: {
+              label: lower.includes("redis") ? "Redis Cache" : "Caching Layer",
+              nodeType: "cache",
+            },
+          });
+        }
+        // Specific architectural additions
+        else if (lower.includes("redis") || lower.includes("cache")) {
+          operations.push({
+            op: "add_node",
+            label: "Redis Cache",
+            nodeType: "cache",
+            positionHint: "right_of",
+            anchorNodeId: checkoutNode ? checkoutNode.id : anchorNodeId,
+          });
+        } else if (lower.includes("kafka") || lower.includes("queue") || lower.includes("rabbitmq") || lower.includes("sqs")) {
+          operations.push({
+            op: "add_node",
+            label: lower.includes("rabbitmq") ? "RabbitMQ" : "Kafka Queue",
+            nodeType: "queue",
+            positionHint: "below",
+            anchorNodeId: checkoutNode ? checkoutNode.id : anchorNodeId,
+          });
+        } else if (lower.includes("elasticsearch") || lower.includes("search")) {
+          operations.push({
+            op: "add_node",
+            label: "Elasticsearch",
+            nodeType: "database",
+            positionHint: "right_of",
+            anchorNodeId: dbNode ? dbNode.id : anchorNodeId,
+          });
+        } else if (lower.includes("mongodb") || lower.includes("dynamo")) {
+          operations.push({
+            op: "add_node",
+            label: lower.includes("dynamo") ? "DynamoDB" : "MongoDB",
+            nodeType: "database",
+            positionHint: "below",
+            anchorNodeId: dbNode ? dbNode.id : anchorNodeId,
+          });
+        } else if (lower.includes("auth")) {
+          operations.push({
+            op: "add_node",
+            label: "Auth Service",
+            nodeType: "service",
+            positionHint: "above",
+            anchorNodeId: gatewayNode ? gatewayNode.id : anchorNodeId,
+          });
+        } else if (lower.includes("s3") || lower.includes("storage") || lower.includes("blob")) {
+          operations.push({
+            op: "add_node",
+            label: "S3 Storage",
+            nodeType: "external",
+            positionHint: "below",
+            anchorNodeId: checkoutNode ? checkoutNode.id : anchorNodeId,
+          });
+        } else if (lower.includes("notification") || lower.includes("email")) {
+          operations.push({
+            op: "add_node",
+            label: "Notification Worker",
+            nodeType: "service",
+            positionHint: "below",
+            anchorNodeId: checkoutNode ? checkoutNode.id : anchorNodeId,
+          });
+        } else if (lower.includes("gateway") || lower.includes("ingress") || lower.includes("cdn")) {
+          operations.push({
+            op: "add_node",
+            label: lower.includes("cdn") ? "Cloudflare CDN" : "API Gateway",
+            nodeType: "gateway",
+            positionHint: "left_of",
+            anchorNodeId: clientNode ? clientNode.id : anchorNodeId,
+          });
+        } else {
+          operations.push({
+            op: "add_node",
+            label: "Analytics Worker",
+            nodeType: "service",
+            positionHint: "below",
+            anchorNodeId,
+          });
+        }
       }
 
       return {
@@ -432,11 +613,20 @@ export class LLMRouter {
       };
     }
 
+    // Conversational Architectural Advisory
+    const topic = lower.includes("calculator")
+      ? "Calculator Distributed System"
+      : lower.includes("uber") || lower.includes("ride")
+      ? "Ride-Hailing & Real-Time Dispatch System"
+      : lower.includes("checkout") || lower.includes("e-commerce")
+      ? "E-Commerce Checkout & Payment Engine"
+      : "Distributed Cloud Architecture";
+
     return {
-      content: JSON.stringify({ is_decision: false, confidence: 0, reason: "Fallback empty" }),
+      content: `I've analyzed the architectural requirements for **${topic}**.\n\n### Recommended Architectural Breakdown:\n1. **Client Tier**: Web & Native Mobile clients communicating over HTTPS with WebSocket connections for real-time state updates.\n2. **Edge & Ingress**: Resilient API Gateway managing authentication, rate limiting, and request routing.\n3. **Application Services**: High-throughput microservices (Calculation / Domain Logic) decoupled for elastic scalability.\n4. **Data & Caching**: Multi-tier persistence with an In-Memory Redis caching cluster in front of a primary transactional PostgreSQL database.\n\nWhenever you're ready, say **"draw the architecture"** or **"draw it"** and I will compile and render these components and data flows directly onto our whiteboard!`,
       provider: "local-synthesizer",
       model: "rule-engine",
-      tokens: 50,
+      tokens: 220,
       providerIndex: 0,
     };
   }

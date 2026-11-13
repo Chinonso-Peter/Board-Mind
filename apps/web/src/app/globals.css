@@ -1,3 +1,4 @@
+@import "./excalidraw.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -13,11 +14,71 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   margin: 0;
   padding: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Whiteboard container */
+.board-canvas-container {
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
+  position: relative;
+  touch-action: none;
+}
+
+/* Prevent text selection when drawing or dragging */
+.select-none-touch {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Custom scrollbar for mobile drawers */
+.touch-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 /* Excalidraw custom container height */
 .excalidraw-container {
   width: 100%;
   height: 100%;
+}
+
+/* Hide Excalidraw's default top middle toolbar, default menus, and unneeded widgets so BoardMind UI controls the workspace */
+.excalidraw .App-toolbar-container,
+.excalidraw .App-toolbar,
+.excalidraw .mobile-misc-tools-container,
+.excalidraw .layer-ui__wrapper__top-right,
+.excalidraw .layer-ui__wrapper__footer-left,
+.excalidraw .layer-ui__wrapper__footer-right,
+.excalidraw .disable-zen-mode,
+.excalidraw .main-menu-trigger,
+.excalidraw .welcome-screen-center,
+.excalidraw .welcome-screen-decor-hint {
+  display: none !important;
+}
+
+/* Offset Excalidraw's properties popup island so it floats elegantly next to the Miro-style left toolbar */
+.excalidraw .App-menu__left,
+.excalidraw .App-menu_left {
+  margin-left: 64px !important;
+  margin-top: 16px !important;
+  z-index: 25 !important;
+}
+
+/* Ensure the canvas layers receive all clicks and gestures */
+.excalidraw .interactive-canvas,
+.excalidraw .static-canvas {
+  touch-action: none !important;
+}
+
+/* Miro-style subtle grid canvas */
+.miro-grid-bg {
+  background-size: 24px 24px;
+  background-image: 
+    linear-gradient(to right, rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
 }

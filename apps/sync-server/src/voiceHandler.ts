@@ -87,9 +87,25 @@ export class VoiceHandler {
       // Transcribe via MultiProviderVoiceAdapter
       try {
         const result = await this.voiceAdapter.transcribe(buffer, context.mimeType);
-        if (!result.text || result.text.length < 2) {
-          return; // Ignore empty / silence
+        if (
+          !result.text ||
+          result.text.length < 2 ||
+          result.provider === "fallback-whisper" ||
+          result.text.includes("cloud API keys not configured")
+        ) {
+          if (result.provider === "fallback-whisper" || result.text.includes("cloud API keys not configured")) {
+            console.warn(`[VoiceHandler] Voice chunk skipped (fallback/unconfigured)`);
+            ws.send(
+              JSON.stringify({
+                type: "VOICE_ERROR",
+                message: "Voice transcription unavailable (active cloud API key needed).",
+              })
+            );
+          }
+          return; // Ignore empty / silence / fallback errors
         }
+
+        console.log(`[VoiceHandler] Transcribed audio via ${result.provider} (${result.durationMs}ms): "${result.text}"`);
 
         const turnId = uuidv4();
         const now = Date.now();

@@ -136,8 +136,10 @@ describe("Sync Server WebSocket & Yjs Protocol Integration", () => {
     // Verify canonical elements array contains the approved element
     const elements = room.doc.getArray("elements");
     expect(elements.length).toBeGreaterThan(0);
-    const added = elements.get(0) as any;
-    expect(added.get("id")).toBe("node_redis_approved");
+    const allElements = elements.toArray().map((el: any) =>
+      typeof el?.toJSON === "function" ? el.toJSON() : (el?.get ? { id: el.get("id") } : el)
+    );
+    expect(allElements.some((e: any) => e.id === "node_redis_approved")).toBe(true);
 
     // Verify checkpoint was created
     const checkpoints = room.doc.getArray("checkpoints");

@@ -4,7 +4,7 @@ import { CircuitBreaker } from "./circuitBreaker.js";
 
 export interface TranscriptResult {
   text: string;
-  provider: "groq-whisper" | "cloudflare-whisper" | "fallback-whisper";
+  provider: "groq-whisper" | "openai-whisper" | "cloudflare-whisper" | "fallback-whisper";
   durationMs: number;
   language: string;
 }
@@ -15,7 +15,9 @@ export interface VoiceProviderAdapter {
 
 export class MultiProviderVoiceAdapter implements VoiceProviderAdapter {
   private groqClient: OpenAI | null = null;
+  private openaiClient: OpenAI | null = null;
   private groqBreaker = new CircuitBreaker("groq-whisper");
+  private openaiBreaker = new CircuitBreaker("openai-whisper");
   private cfBreaker = new CircuitBreaker("cloudflare-whisper");
 
   constructor(
@@ -27,6 +29,15 @@ export class MultiProviderVoiceAdapter implements VoiceProviderAdapter {
       this.groqClient = new OpenAI({
         baseURL: "https://api.groq.com/openai/v1",
         apiKey: groqKey,
+        timeout: 15_000,
+      });
+    }
+
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey && openaiKey !== "missing") {
+      this.openaiClient = new OpenAI({
+        baseURL: "https://api.openai.com/v1",
+        apiKey: openaiKey,
         timeout: 15_000,
       });
     }
@@ -100,6 +111,37 @@ export class MultiProviderVoiceAdapter implements VoiceProviderAdapter {
       } catch (err: any) {
         this.groqBreaker.recordFailure();
         console.warn(`[VoiceAdapter] Groq Whisper error: ${err.message}`);
+      }
+    }
+
+    // 2. Secondary: OpenAI Whisper (whisper-1)
+    if (
+      this.openaiClient &&
+      this.openaiBreaker.shouldAttempt() &&
+      this.usageTracker.getDailyRequests("openai-whisper") < 2000
+    ) {
+      try {
+        const file = await toFile(audioBuffer, `chunk.${ext}`, { type: mimeType });
+        const response = await this.openaiClient.audio.transcriptions.create({
+          file,
+          model: "whisper-1",
+          language,
+          response_format: "json",
+          temperature: 0.0,
+        });
+
+        this.openaiBreaker.recordSuccess();
+        this.usageTracker.increment("openai-whisper", 1, Math.ceil(audioBuffer.length / 1024));
+
+        return {
+          text: this.filterHallucinations(response.text),
+          provider: "openai-whisper",
+          durationMs: Date.now() - start,
+          language,
+        };
+      } catch (err: any) {
+        this.openaiBreaker.recordFailure();
+        console.warn(`[VoiceAdapter] OpenAI Whisper error: ${err.message}`);
       }
     }
 

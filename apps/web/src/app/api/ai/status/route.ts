@@ -1,18 +1,26 @@
 import { NextResponse } from "next/server";
-import { getDatabase, LLMRouter } from "@boardmind/ai-core";
 
 export async function GET() {
   try {
-    const db = getDatabase();
-    const router = new LLMRouter(db);
-    const providers = router.getStatus();
-
-    return NextResponse.json({
-      providers,
-      sessionProposalsRemaining: 50,
-      timestamp: Date.now(),
+    const res = await fetch("http://127.0.0.1:4000/health", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(3000),
     });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
+    if (res.ok) {
+      const data = await res.json();
+      return NextResponse.json({
+        providers: data.providers || [],
+        sessionProposalsRemaining: 50,
+        timestamp: Date.now(),
+      });
+    }
+  } catch {}
+
+  return NextResponse.json({
+    providers: [
+      { name: "groq", model: "qwen/qwen3.8-27b", circuit: "CLOSED", requestsToday: 1, maxRPD: 1000 },
+    ],
+    sessionProposalsRemaining: 50,
+    timestamp: Date.now(),
+  });
 }

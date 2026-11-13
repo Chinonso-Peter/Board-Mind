@@ -7,7 +7,7 @@ export type EditIntent =
       label: string;
       nodeType: NodeType;
       positionHint?: PositionHint;
-      anchorNodeId?: string;
+      anchorNodeId?: string | null;
     }
   | {
       op: "remove_node";
@@ -17,7 +17,7 @@ export type EditIntent =
       op: "add_edge";
       sourceId: string;
       targetId: string;
-      label?: string;
+      label?: string | null;
     }
   | {
       op: "remove_edge";
@@ -50,7 +50,7 @@ export type EditIntent =
         label: string;
         nodeType: NodeType;
       };
-      targetId?: string;
+      targetId?: string | null;
     };
 
 export interface ExcalidrawBoundElement {
@@ -101,6 +101,8 @@ export interface ExcalidrawElement {
   fontFamily?: number;
   textAlign?: "left" | "center" | "right";
   verticalAlign?: "top" | "middle" | "bottom";
+  lineHeight?: number;
+  baseline?: number;
 }
 
 export type PlannedMutation =
@@ -132,7 +134,7 @@ export interface DiagramEdge {
   labelId?: string;
   sourceId?: string;
   targetId?: string;
-  label?: string;
+  label?: string | null;
 }
 
 export interface DecisionDetectionResult {

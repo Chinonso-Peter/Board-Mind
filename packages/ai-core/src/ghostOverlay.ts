@@ -19,8 +19,8 @@ export function generateGhostOverlay(
       cloned.strokeStyle = "dashed";
       cloned.strokeColor = "#4f46e5"; // Indigo-600
       cloned.backgroundColor = "#eef2ff"; // Indigo-50
-      cloned.opacity = 60;
-      cloned.locked = true;
+      cloned.opacity = 75;
+      cloned.locked = false;
       cloned.customData = {
         ...(cloned.customData || {}),
         isGhost: true,

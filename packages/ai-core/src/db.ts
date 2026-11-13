@@ -8,7 +8,20 @@ import type {
   ProviderUsageRecord,
 } from "./types.js";
 
-export function getDatabase(dbPath = process.env.SQLITE_PATH || "/data/db/boardmind.sqlite"): Database.Database {
+function getDefaultSqlitePath(): string {
+  if (process.env.SQLITE_PATH) return process.env.SQLITE_PATH;
+  try {
+    if (fs.existsSync("/data")) {
+      fs.accessSync("/data", fs.constants.W_OK);
+      return "/data/db/boardmind.sqlite";
+    }
+  } catch {
+    // Fall back to local data dir
+  }
+  return path.join(process.cwd(), "data", "db", "boardmind.sqlite");
+}
+
+export function getDatabase(dbPath = getDefaultSqlitePath()): Database.Database {
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });

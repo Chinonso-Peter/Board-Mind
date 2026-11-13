@@ -99,9 +99,14 @@ export const TimelineScrubber: React.FC<TimelineScrubberProps> = ({ boardId, onR
   if (!timelineOpen) return null;
 
   return (
-    <div className="fixed inset-y-0 right-0 z-50 w-80 md:w-96 bg-white border-l border-slate-200 shadow-2xl flex flex-col transition-all">
+    <div className="fixed inset-x-0 bottom-0 top-14 sm:top-0 sm:left-auto sm:right-0 sm:w-96 z-50 bg-white sm:border-l border-slate-200 shadow-2xl flex flex-col rounded-t-2xl sm:rounded-none transition-all touch-scroll animate-in slide-in-from-bottom sm:slide-in-from-right duration-200">
+      {/* Mobile Top Drag Indicator */}
+      <div className="sm:hidden flex justify-center pt-2 pb-1">
+        <div className="w-10 h-1 bg-slate-200 rounded-full" />
+      </div>
+
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+      <div className="flex items-center justify-between px-4 py-2.5 sm:py-3 border-b border-slate-100">
         <div className="flex items-center space-x-2">
           <History className="w-4 h-4 text-indigo-600" />
           <h3 className="font-semibold text-sm text-slate-800">Version History & Time-Travel</h3>
@@ -113,9 +118,10 @@ export const TimelineScrubber: React.FC<TimelineScrubberProps> = ({ boardId, onR
             setSelectedCkptId(null);
             setTimelineOpen(false);
           }}
-          className="p-1 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+          className="p-1.5 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 touch-manipulation"
+          title="Close history"
         >
-          <X className="w-4 h-4" />
+          <X className="w-5 h-5 sm:w-4 sm:h-4" />
         </button>
       </div>
 

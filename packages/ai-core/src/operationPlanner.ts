@@ -177,6 +177,8 @@ export function createExcalidrawBoundText(params: {
     fontFamily: 1,
     textAlign: "center",
     verticalAlign: "middle",
+    lineHeight: 1.25 as any,
+    baseline: 18 as any,
   };
 }
 
@@ -236,7 +238,7 @@ export function buildWorkingGraph(elements: ExcalidrawElement[]): WorkingGraph {
   const elementsMap = new Map<string, ExcalidrawElement>();
 
   for (const el of elements) {
-    if (el.isDeleted) continue;
+    if (el.isDeleted || el.customData?.isGhost || el.id?.startsWith("ghost_")) continue;
     elementsMap.set(el.id, JSON.parse(JSON.stringify(el)));
   }
 
@@ -290,11 +292,34 @@ export function planOperations(
   const state = buildWorkingGraph(initialElements);
   const mutations: PlannedMutation[] = [];
 
+  function resolveNode(ref?: string | null): DiagramNode | undefined {
+    if (!ref) return undefined;
+    const cleanRef = ref.trim();
+    if (state.nodes.has(cleanRef)) return state.nodes.get(cleanRef);
+    const normalized = cleanRef.toLowerCase();
+    for (const node of state.nodes.values()) {
+      if (node.id.toLowerCase() === normalized) return node;
+      if (node.label.trim().toLowerCase() === normalized) return node;
+      const strippedLabel = node.label.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const strippedRef = normalized.replace(/[^a-z0-9]/g, "");
+      if (
+        strippedLabel.length > 2 &&
+        strippedRef.length > 2 &&
+        (strippedLabel === strippedRef ||
+          strippedLabel.includes(strippedRef) ||
+          strippedRef.includes(strippedLabel))
+      ) {
+        return node;
+      }
+    }
+    return undefined;
+  }
+
   function execAddNode(
     label: string,
     nodeType: NodeType,
     positionHint: PositionHint = "right_of",
-    anchorNodeId?: string,
+    anchorNodeId?: string | null,
     explicitCoords?: { x: number; y: number }
   ): DiagramNode {
     const nodeId = `node_${uuidv4()}`;
@@ -308,29 +333,31 @@ export function planOperations(
     if (explicitCoords) {
       rawX = explicitCoords.x;
       rawY = explicitCoords.y;
-    } else if (anchorNodeId && state.nodes.has(anchorNodeId)) {
-      const anchor = state.nodes.get(anchorNodeId)!;
-      switch (positionHint) {
-        case "right_of":
-          rawX = anchor.x + anchor.width + GRID_GAP_X;
-          rawY = anchor.y;
-          break;
-        case "left_of":
-          rawX = anchor.x - width - GRID_GAP_X;
-          rawY = anchor.y;
-          break;
-        case "below":
-          rawX = anchor.x;
-          rawY = anchor.y + anchor.height + GRID_GAP_Y;
-          break;
-        case "above":
-          rawX = anchor.x;
-          rawY = anchor.y - height - GRID_GAP_Y;
-          break;
-        default:
-          rawX = anchor.x + GRID_GAP_X;
-          rawY = anchor.y + GRID_GAP_Y;
-          break;
+    } else if (anchorNodeId) {
+      const anchor = resolveNode(anchorNodeId);
+      if (anchor) {
+        switch (positionHint) {
+          case "right_of":
+            rawX = anchor.x + anchor.width + GRID_GAP_X;
+            rawY = anchor.y;
+            break;
+          case "left_of":
+            rawX = anchor.x - width - GRID_GAP_X;
+            rawY = anchor.y;
+            break;
+          case "below":
+            rawX = anchor.x;
+            rawY = anchor.y + anchor.height + GRID_GAP_Y;
+            break;
+          case "above":
+            rawX = anchor.x;
+            rawY = anchor.y - height - GRID_GAP_Y;
+            break;
+          default:
+            rawX = anchor.x + GRID_GAP_X;
+            rawY = anchor.y + GRID_GAP_Y;
+            break;
+        }
       }
     } else if (state.nodes.size > 0) {
       let maxRight = -Infinity;
@@ -394,11 +421,12 @@ export function planOperations(
   }
 
   function execRemoveNode(id: string): void {
-    const node = state.nodes.get(id);
+    const node = resolveNode(id);
     if (!node) return;
+    const actualId = node.id;
 
     for (const [edgeId, edge] of Array.from(state.edges.entries())) {
-      if (edge.sourceId === id || edge.targetId === id) {
+      if (edge.sourceId === actualId || edge.targetId === actualId) {
         execRemoveEdge(edgeId);
       }
     }
@@ -407,15 +435,30 @@ export function planOperations(
       mutations.push({ op: "delete", elementId: node.textId });
       state.elementsMap.delete(node.textId);
     }
-    mutations.push({ op: "delete", elementId: id });
-    state.nodes.delete(id);
-    state.elementsMap.delete(id);
+    mutations.push({ op: "delete", elementId: actualId });
+    state.nodes.delete(actualId);
+    state.elementsMap.delete(actualId);
   }
 
-  function execAddEdge(sourceId: string, targetId: string, label?: string): DiagramEdge | null {
-    const source = state.nodes.get(sourceId);
-    const target = state.nodes.get(targetId);
+  function execAddEdge(
+    sourceId: string,
+    targetId: string,
+    label?: string | null
+  ): DiagramEdge | null {
+    const source = resolveNode(sourceId);
+    const target = resolveNode(targetId);
     if (!source || !target) return null;
+
+    const cleanLabel = (label ?? "").trim().toLowerCase();
+    for (const edge of state.edges.values()) {
+      if (
+        edge.sourceId === source.id &&
+        edge.targetId === target.id &&
+        (!cleanLabel || (edge.label ?? "").trim().toLowerCase() === cleanLabel)
+      ) {
+        return edge;
+      }
+    }
 
     const edgeId = `edge_${uuidv4()}`;
     const labelId = label ? `txt_${uuidv4()}` : undefined;
@@ -426,21 +469,21 @@ export function planOperations(
       x: geom.x,
       y: geom.y,
       points: geom.points,
-      startBinding: { elementId: sourceId, focus: 0, gap: 4 },
-      endBinding: { elementId: targetId, focus: 0, gap: 4 },
+      startBinding: { elementId: source.id, focus: 0, gap: 4 },
+      endBinding: { elementId: target.id, focus: 0, gap: 4 },
       boundElements: labelId ? [{ id: labelId, type: "text" }] : [],
-      customData: { bmKind: "edge", sourceId, targetId, label: label ?? "" },
+      customData: { bmKind: "edge", sourceId: source.id, targetId: target.id, label: label ?? "" },
     });
 
     mutations.push({ op: "add", elementId: edgeId, element: arrowEl });
     mutations.push({
       op: "update",
-      elementId: sourceId,
+      elementId: source.id,
       patch: { appendBoundElement: { id: edgeId, type: "arrow" } },
     });
     mutations.push({
       op: "update",
-      elementId: targetId,
+      elementId: target.id,
       patch: { appendBoundElement: { id: edgeId, type: "arrow" } },
     });
 
@@ -542,7 +585,7 @@ export function planOperations(
     let preservedLabel: string | undefined;
     for (const [edgeId, edge] of Array.from(state.edges.entries())) {
       if (edge.sourceId === sourceId && edge.targetId === targetId) {
-        preservedLabel = edge.label;
+        preservedLabel = edge.label || undefined;
         execRemoveEdge(edgeId);
       }
     }
@@ -589,9 +632,24 @@ export function planOperations(
   for (const intent of intents) {
     switch (intent.op) {
       case "add_node": {
-        const addedNode = execAddNode(intent.label, intent.nodeType, intent.positionHint, intent.anchorNodeId);
-        if (intent.anchorNodeId && state.nodes.has(intent.anchorNodeId)) {
-          execAddEdge(intent.anchorNodeId, addedNode.id);
+        const addedNode = execAddNode(
+          intent.label,
+          intent.nodeType,
+          intent.positionHint,
+          intent.anchorNodeId
+        );
+        if (intent.anchorNodeId) {
+          const anchor = resolveNode(intent.anchorNodeId);
+          if (
+            anchor &&
+            !intents.some(
+              (i) =>
+                i.op === "add_edge" &&
+                (i.sourceId === intent.anchorNodeId || i.targetId === intent.anchorNodeId)
+            )
+          ) {
+            execAddEdge(anchor.id, addedNode.id);
+          }
         }
         break;
       }
@@ -614,10 +672,147 @@ export function planOperations(
         execInsertBetween(intent.sourceId, intent.targetId, intent.newNode);
         break;
       case "fork_path":
-        execForkPath(intent.sourceId, intent.branchNode, intent.targetId);
+        execForkPath(intent.sourceId, intent.branchNode, intent.targetId || undefined);
         break;
     }
   }
 
   return mutations;
+}
+
+export function createSeedDiagram(): ExcalidrawElement[] {
+  const elements: ExcalidrawElement[] = [];
+
+  const nodes: Array<{
+    id: string;
+    textId: string;
+    label: string;
+    nodeType: NodeType;
+    x: number;
+    y: number;
+  }> = [
+    {
+      id: "node_client",
+      textId: "text_node_client",
+      label: "Client App\n(Web & Mobile)",
+      nodeType: "external",
+      x: 80,
+      y: 260,
+    },
+    {
+      id: "node_gateway",
+      textId: "text_node_gateway",
+      label: "API Gateway\n(Envoy / Ingress)",
+      nodeType: "gateway",
+      x: 380,
+      y: 260,
+    },
+    {
+      id: "node_checkout",
+      textId: "text_node_checkout",
+      label: "Checkout Service\n(Order API)",
+      nodeType: "service",
+      x: 680,
+      y: 260,
+    },
+    {
+      id: "node_postgres",
+      textId: "text_node_postgres",
+      label: "PostgreSQL\n(Orders DB)",
+      nodeType: "database",
+      x: 980,
+      y: 140,
+    },
+    {
+      id: "node_stripe",
+      textId: "text_node_stripe",
+      label: "Payment Gateway\n(Stripe)",
+      nodeType: "external",
+      x: 980,
+      y: 380,
+    },
+  ];
+
+  const edges: Array<{
+    id: string;
+    sourceId: string;
+    targetId: string;
+    label?: string;
+  }> = [
+    { id: "edge_client_gateway", sourceId: "node_client", targetId: "node_gateway", label: "HTTPS / REST" },
+    { id: "edge_gateway_checkout", sourceId: "node_gateway", targetId: "node_checkout", label: "gRPC" },
+    { id: "edge_checkout_postgres", sourceId: "node_checkout", targetId: "node_postgres", label: "SQL / ACID" },
+    { id: "edge_checkout_stripe", sourceId: "node_checkout", targetId: "node_stripe", label: "REST (Idempotent)" },
+  ];
+
+  const nodeMap = new Map<string, typeof nodes[0]>();
+  for (const n of nodes) nodeMap.set(n.id, n);
+
+  // Create node shapes & bound texts
+  for (const n of nodes) {
+    const colors = getNodeColors(n.nodeType);
+    const shape = createExcalidrawShape({
+      id: n.id,
+      type: "rectangle",
+      x: n.x,
+      y: n.y,
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
+      backgroundColor: colors.bg,
+      strokeStyle: colors.strokeStyle,
+      boundElements: [{ id: n.textId, type: "text" }],
+      customData: {
+        kind: "node",
+        nodeId: n.id,
+        label: n.label.split("\n")[0],
+        nodeType: n.nodeType,
+        status: "canonical",
+      },
+    });
+
+    const text = createExcalidrawBoundText({
+      id: n.textId,
+      containerId: n.id,
+      text: n.label,
+      x: n.x,
+      y: n.y + 20,
+      width: NODE_WIDTH,
+      height: 40,
+    });
+    text.customData = { kind: "node_label", nodeId: n.id };
+
+    elements.push(shape, text);
+  }
+
+  // Create arrows
+  for (const e of edges) {
+    const src = nodeMap.get(e.sourceId)!;
+    const tgt = nodeMap.get(e.targetId)!;
+    const geom = computeEdgeGeometry(
+      { id: src.id, label: src.label, nodeType: src.nodeType, x: src.x, y: src.y, width: NODE_WIDTH, height: NODE_HEIGHT },
+      { id: tgt.id, label: tgt.label, nodeType: tgt.nodeType, x: tgt.x, y: tgt.y, width: NODE_WIDTH, height: NODE_HEIGHT }
+    );
+
+    const arrow = createExcalidrawArrow({
+      id: e.id,
+      x: geom.x,
+      y: geom.y,
+      points: geom.points,
+      startBinding: { elementId: e.sourceId, focus: 0, gap: 4 },
+      endBinding: { elementId: e.targetId, focus: 0, gap: 4 },
+      boundElements: [],
+      customData: {
+        kind: "edge",
+        edgeId: e.id,
+        sourceId: e.sourceId,
+        targetId: e.targetId,
+        label: e.label || "",
+        status: "canonical",
+      },
+    });
+
+    elements.push(arrow);
+  }
+
+  return elements;
 }

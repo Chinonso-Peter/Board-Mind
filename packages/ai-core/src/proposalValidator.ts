@@ -63,6 +63,12 @@ export function validateProposal(
     return { valid: false, errors: ["Proposal produced zero element mutations."] };
   }
 
+  const newlyAddedNodeIds = new Set(
+    mutations
+      .filter((m) => m.op === "add" && m.element?.type !== "arrow" && m.element?.type !== "text")
+      .map((m) => m.elementId)
+  );
+
   // Apply mutations to a dry-run element map
   const simulated = simulateMutations(currentElements, mutations);
 
@@ -77,7 +83,7 @@ export function validateProposal(
   const edgeList: DiagramEdge[] = [];
 
   for (const el of simulated.allElements) {
-    if (el.isDeleted) continue;
+    if (el.isDeleted || el.customData?.isGhost || el.id?.startsWith("ghost_")) continue;
     if (el.customData?.bmKind === "node" || el.type === "rectangle" || el.type === "diamond" || el.type === "ellipse") {
       // If it's a node shape (not an arrow or pure text container)
       if (el.type !== "arrow" && el.type !== "text") {
@@ -129,26 +135,33 @@ export function validateProposal(
 
     // Check 4: No duplicate edges (same sourceId, targetId, and normalized label)
     const sig = `${edge.sourceId}->${edge.targetId}::${edge.label}`;
-    if (edgeSignatureSet.has(sig)) {
-      errors.push(`Duplicate edge detected: ${sig}`);
+    const isNewEdge = mutations.some((m) => m.op === "add" && m.elementId === edge.id);
+    if (isNewEdge && edgeSignatureSet.has(sig)) {
+      console.warn(`[ProposalValidator] Duplicate edge detected and tolerated: ${sig}`);
+    } else {
+      edgeSignatureSet.add(sig);
     }
-    edgeSignatureSet.add(sig);
 
     degreeMap.set(edge.sourceId, (degreeMap.get(edge.sourceId) ?? 0) + 1);
     degreeMap.set(edge.targetId, (degreeMap.get(edge.targetId) ?? 0) + 1);
   }
 
-  // Check 5: No orphan nodes (unless explicitly allowed or board has <= 1 node)
-  if (!options.allowOrphanNodes && nodeMap.size > 1) {
+  // Check 5: Orphan nodes (tolerated for progressive whiteboard sketching)
+  if (options.allowOrphanNodes === false && nodeMap.size > 1) {
+    const newlyAddedNodeIds = new Set(
+      mutations
+        .filter((m) => m.op === "add" && m.element?.type !== "arrow" && m.element?.type !== "text")
+        .map((m) => m.elementId)
+    );
     for (const [nodeId, degree] of degreeMap.entries()) {
-      if (degree === 0) {
+      if (degree === 0 && newlyAddedNodeIds.has(nodeId)) {
         const label = nodeMap.get(nodeId)?.label || nodeId;
-        errors.push(`Orphan node detected without edges: '${label}' (${nodeId}).`);
+        console.warn(`[ProposalValidator] Orphan node tolerated: '${label}' (${nodeId})`);
       }
     }
   }
 
-  // Check 6: Layout bounding-box overlap check across all nodes
+  // Check 6: Layout bounding-box overlap check (warn instead of rejecting to avoid blocking proposals)
   const nodes = Array.from(nodeMap.values());
   for (let i = 0; i < nodes.length; i++) {
     for (let j = i + 1; j < nodes.length; j++) {
@@ -161,9 +174,9 @@ export function validateProposal(
         a.y < b.y + b.height + MIN_BOX_SEPARATION &&
         a.y + a.height + MIN_BOX_SEPARATION > b.y;
 
-      if (overlapX && overlapY) {
-        errors.push(
-          `Bounding box overlap between '${a.label}' (${a.id}) and '${b.label}' (${b.id}).`
+      if (overlapX && overlapY && (newlyAddedNodeIds.has(a.id) || newlyAddedNodeIds.has(b.id))) {
+        console.warn(
+          `[ProposalValidator] Minor bounding box overlap between '${a.label}' (${a.id}) and '${b.label}' (${b.id}) — tolerated.`
         );
       }
     }

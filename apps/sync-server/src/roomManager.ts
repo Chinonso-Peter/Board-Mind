@@ -387,32 +387,31 @@ Guidelines:
 
       for (const mut of mutations) {
         if (mut.op === "add") {
-          const elMap = new Y.Map();
-          for (const [k, v] of Object.entries(mut.element)) {
-            elMap.set(k, v);
-          }
-          elementsArray.push([elMap]);
+          elementsArray.push([mut.element]);
         } else if (mut.op === "delete") {
           for (let i = elementsArray.length - 1; i >= 0; i--) {
             const item: any = elementsArray.get(i);
-            const id = item?.get ? item.get("id") : item?.id;
-            if (id === mut.elementId) {
+            const rawEl = typeof item?.toJSON === "function" ? item.toJSON() : item;
+            if (rawEl && rawEl.id === mut.elementId) {
               elementsArray.delete(i, 1);
             }
           }
         } else if (mut.op === "update") {
           for (let i = 0; i < elementsArray.length; i++) {
             const item: any = elementsArray.get(i);
-            const id = item?.get ? item.get("id") : item?.id;
-            if (id === mut.elementId && item?.set) {
+            const rawEl = typeof item?.toJSON === "function" ? item.toJSON() : item;
+            if (rawEl && rawEl.id === mut.elementId) {
+              const updated = { ...rawEl };
               for (const [pk, pv] of Object.entries(mut.patch)) {
                 if (pk === "appendBoundElement") {
-                  const existingBounds = (item.get("boundElements") as any[]) || [];
-                  item.set("boundElements", [...existingBounds, pv]);
+                  const existingBounds = Array.isArray(updated.boundElements) ? updated.boundElements : [];
+                  updated.boundElements = [...existingBounds, pv];
                 } else {
-                  item.set(pk, pv);
+                  updated[pk] = pv;
                 }
               }
+              elementsArray.delete(i, 1);
+              elementsArray.insert(i, [updated]);
             }
           }
         }
@@ -422,6 +421,9 @@ Guidelines:
       propMap.set("resolvedBy", userId);
       propMap.set("resolvedAt", Date.now());
     });
+
+    room.dirty = true;
+    this.snapshotStorage.saveRoomStateToDb(boardId, room.doc);
 
     // Create Checkpoint snapshot
     const summary = (propMap.get("decisionSummary") as string) || "AI Proposal";

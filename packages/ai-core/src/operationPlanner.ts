@@ -447,7 +447,7 @@ export function planOperations(
   ): DiagramEdge | null {
     const source = resolveNode(sourceId);
     const target = resolveNode(targetId);
-    if (!source || !target) return null;
+    if (!source || !target || source.id === target.id) return null;
 
     const cleanLabel = (label ?? "").trim().toLowerCase();
     for (const edge of state.edges.values()) {
@@ -503,7 +503,7 @@ export function planOperations(
       state.elementsMap.set(labelId, edgeTextEl);
     }
 
-    const edgeRecord: DiagramEdge = { id: edgeId, labelId, sourceId, targetId, label };
+    const edgeRecord: DiagramEdge = { id: edgeId, labelId, sourceId: source.id, targetId: target.id, label };
     state.edges.set(edgeId, edgeRecord);
     state.elementsMap.set(edgeId, arrowEl);
     return edgeRecord;

@@ -39,6 +39,30 @@ export function generateGhostOverlay(
         }));
       }
 
+      // If arrow bindings point to nodes created in this proposal, redirect to ghost node IDs
+      if (cloned.startBinding?.elementId) {
+        const targetAdded = mutations.some(
+          (m) => m.op === "add" && m.elementId === cloned.startBinding?.elementId
+        );
+        if (targetAdded) {
+          cloned.startBinding = {
+            ...cloned.startBinding,
+            elementId: `ghost_${cloned.startBinding.elementId}`,
+          };
+        }
+      }
+      if (cloned.endBinding?.elementId) {
+        const targetAdded = mutations.some(
+          (m) => m.op === "add" && m.elementId === cloned.endBinding?.elementId
+        );
+        if (targetAdded) {
+          cloned.endBinding = {
+            ...cloned.endBinding,
+            elementId: `ghost_${cloned.endBinding.elementId}`,
+          };
+        }
+      }
+
       ghostElements.push(cloned);
     }
   }

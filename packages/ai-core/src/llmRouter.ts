@@ -469,7 +469,31 @@ export class LLMRouter {
         // Ignore JSON parse error
       }
 
-      if (lower.includes("calculator")) {
+      if (
+        lower.includes("ledger") ||
+        lower.includes("financial") ||
+        lower.includes("transaction") ||
+        lower.includes("sustainable") ||
+        lower.includes("competitive")
+      ) {
+        operations.push(
+          { op: "add_node", label: "Client Application", nodeType: "external", positionHint: "center" },
+          { op: "add_node", label: "API Gateway (Kong/Envoy)", nodeType: "gateway", positionHint: "right_of" },
+          { op: "add_node", label: "Transaction Service (Command)", nodeType: "service", positionHint: "right_of" },
+          { op: "add_node", label: "Kafka Event Broker", nodeType: "queue", positionHint: "right_of" },
+          { op: "add_node", label: "Ledger Service (Event Store)", nodeType: "service", positionHint: "below" },
+          { op: "add_node", label: "Balance Projector", nodeType: "service", positionHint: "above" },
+          { op: "add_node", label: "Redis Balance Cache", nodeType: "cache", positionHint: "right_of" },
+          { op: "add_node", label: "PostgreSQL Database", nodeType: "database", positionHint: "right_of" },
+          { op: "add_edge", sourceId: "Client Application", targetId: "API Gateway (Kong/Envoy)", label: "HTTPS / REST" },
+          { op: "add_edge", sourceId: "API Gateway (Kong/Envoy)", targetId: "Transaction Service (Command)", label: "gRPC" },
+          { op: "add_edge", sourceId: "Transaction Service (Command)", targetId: "Kafka Event Broker", label: "Produce Event" },
+          { op: "add_edge", sourceId: "Kafka Event Broker", targetId: "Ledger Service (Event Store)", label: "Consume Event" },
+          { op: "add_edge", sourceId: "Kafka Event Broker", targetId: "Balance Projector", label: "Consume Event" },
+          { op: "add_edge", sourceId: "Balance Projector", targetId: "Redis Balance Cache", label: "Update Cache" },
+          { op: "add_edge", sourceId: "Ledger Service (Event Store)", targetId: "PostgreSQL Database", label: "Persist SQL" }
+        );
+      } else if (lower.includes("calculator")) {
         operations.push(
           { op: "add_node", label: "Calculator Web/Mobile Client", nodeType: "external", positionHint: "center" },
           { op: "add_node", label: "API Gateway", nodeType: "gateway", positionHint: "right_of" },

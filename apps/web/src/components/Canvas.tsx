@@ -113,6 +113,8 @@ export const Canvas: React.FC<CanvasProps> = ({
 
   const hasAutoFittedRef = useRef(false);
   const prevProposalCountRef = useRef(0);
+  const prevElementsCountRef = useRef(0);
+  const isUpdatingFromSyncRef = useRef(false);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const isLocalInteractingRef = useRef(false);
   const lastLocalUpdateTimestampRef = useRef<number>(0);
@@ -127,20 +129,28 @@ export const Canvas: React.FC<CanvasProps> = ({
 
   // Sync elements into Excalidraw using restoreElements and auto-center viewport
   useEffect(() => {
-    // If user is actively drawing, dragging, or just edited locally (< 1200ms ago), DO NOT overwrite the scene!
-    if (isLocalInteractingRef.current || Date.now() - lastLocalUpdateTimestampRef.current < 1200) {
+    // If user is actively drawing, dragging, or just edited locally (< 800ms ago), DO NOT overwrite the scene!
+    if (isLocalInteractingRef.current || Date.now() - lastLocalUpdateTimestampRef.current < 800) {
       return;
     }
 
-    if (excalidrawApi && elements && elements.length > 0) {
+    if (excalidrawApi && elements) {
       import("@excalidraw/excalidraw").then(({ restoreElements }) => {
         try {
+          isUpdatingFromSyncRef.current = true;
           const restored = restoreElements(elements as any, null);
           excalidrawApi.updateScene({ elements: restored });
 
-          // On initial diagram load, auto-fit content so the entire architecture is centered
-          if (!hasAutoFittedRef.current) {
+          // Auto-fit content so the entire architecture is centered
+          const shouldAutoFit =
+            !hasAutoFittedRef.current ||
+            (elements.length > 0 && prevElementsCountRef.current === 0) ||
+            proposals.length > prevProposalCountRef.current;
+
+          if (elements.length > 0 && shouldAutoFit) {
             hasAutoFittedRef.current = true;
+            prevProposalCountRef.current = proposals.length;
+            prevElementsCountRef.current = elements.length;
             setTimeout(() => {
               try {
                 const sceneEls = excalidrawApi.getSceneElements();
@@ -148,20 +158,24 @@ export const Canvas: React.FC<CanvasProps> = ({
                   excalidrawApi.scrollToContent(sceneEls, {
                     fitToViewport: true,
                     viewportZoomFactor: 0.82,
-                    animate: false,
+                    animate: true,
                   });
                 }
               } catch {
                 // Ignore
               }
-            }, 120);
+            }, 100);
           }
         } catch {
           excalidrawApi.updateScene({ elements: elements as any });
+        } finally {
+          setTimeout(() => {
+            isUpdatingFromSyncRef.current = false;
+          }, 120);
         }
       });
     }
-  }, [excalidrawApi, elements]);
+  }, [excalidrawApi, elements, proposals.length]);
 
   // When a new proposal arrives, automatically focus the camera on all elements including the ghost!
   useEffect(() => {
@@ -198,6 +212,11 @@ export const Canvas: React.FC<CanvasProps> = ({
       }
       if (appState?.zoom?.value) {
         setZoomPercent(Math.round(appState.zoom.value * 100));
+      }
+
+      // Ignore scene changes initiated by our sync from Yjs
+      if (isUpdatingFromSyncRef.current) {
+        return;
       }
 
       // Mark local interaction active
@@ -769,24 +788,31 @@ export const Canvas: React.FC<CanvasProps> = ({
                       }`}
                     >
                       <div className="whitespace-pre-wrap">{turn.text}</div>
-                      {isAi && proposals.length > 0 && turn.text.includes("ghost overlay") && (
-                        <div className="mt-2.5 pt-2 border-t border-amber-200/60 flex items-center space-x-2">
-                          <button
-                            type="button"
-                            onClick={() => approveProposal(proposals[0].id)}
-                            className="flex items-center space-x-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold rounded-xl shadow-xs transition-all text-xs cursor-pointer"
-                          >
-                            <Check className="w-3.5 h-3.5 stroke-[3]" />
-                            <span>Approve & Add to Diagram</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => dismissProposal(proposals[0].id)}
-                            className="px-2 py-1.5 hover:bg-amber-100 text-slate-500 hover:text-slate-700 rounded-xl transition-colors text-xs cursor-pointer"
-                          >
-                            Dismiss
-                          </button>
-                        </div>
+                      {isAi && turn.text.includes("ghost overlay") && (
+                        proposals.length > 0 ? (
+                          <div className="mt-2.5 pt-2 border-t border-amber-200/60 flex items-center space-x-2">
+                            <button
+                              type="button"
+                              onClick={() => approveProposal(proposals[0].id)}
+                              className="flex items-center space-x-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold rounded-xl shadow-xs transition-all text-xs cursor-pointer"
+                            >
+                              <Check className="w-3.5 h-3.5 stroke-[3]" />
+                              <span>Approve & Add to Diagram</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => dismissProposal(proposals[0].id)}
+                              className="px-2 py-1.5 hover:bg-amber-100 text-slate-500 hover:text-slate-700 rounded-xl transition-colors text-xs cursor-pointer"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="mt-2.5 pt-2 border-t border-emerald-200/60 flex items-center space-x-1.5 text-emerald-700 font-semibold text-[11px]">
+                            <Check className="w-3.5 h-3.5 stroke-[3] text-emerald-600" />
+                            <span>Merged into architecture whiteboard</span>
+                          </div>
+                        )
                       )}
                     </div>
                   </div>

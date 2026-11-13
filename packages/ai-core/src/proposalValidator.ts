@@ -130,7 +130,8 @@ export function validateProposal(
 
     // Check 3: No self-referencing edges
     if (edge.sourceId === edge.targetId) {
-      errors.push(`Edge ${edge.id} is self-referencing on node '${edge.sourceId}'.`);
+      console.warn(`[ProposalValidator] Edge ${edge.id} is self-referencing on node '${edge.sourceId}' (ignoring edge).`);
+      continue;
     }
 
     // Check 4: No duplicate edges (same sourceId, targetId, and normalized label)

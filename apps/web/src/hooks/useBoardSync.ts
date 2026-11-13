@@ -13,6 +13,16 @@ export interface ActiveGhostProposal {
   centroid: { x: number; y: number };
 }
 
+// Helper to identify ephemeral ghost elements
+function isGhostItem(el: any): boolean {
+  if (!el || !el.id) return false;
+  if (typeof el.id === "string" && el.id.startsWith("ghost_")) return true;
+  if (el.customData?.isGhost === true) return true;
+  if (el.customData?.proposalId) return true;
+  if (el.customData?.status === "proposed" || el.customData?.ghostId) return true;
+  return false;
+}
+
 export function useBoardSync(boardId: string, wsToken?: string, currentUser?: { id: string; name: string }) {
   const [doc] = useState(() => new Y.Doc());
   const [elements, setElements] = useState<ExcalidrawElement[]>([]);
@@ -88,16 +98,6 @@ export function useBoardSync(boardId: string, wsToken?: string, currentUser?: { 
       setCollaborators(users);
       setAiStatus(currentAiStatus);
     });
-
-    // Helper to identify ephemeral ghost elements
-    const isGhostItem = (el: any): boolean => {
-      if (!el || !el.id) return false;
-      if (typeof el.id === "string" && el.id.startsWith("ghost_")) return true;
-      if (el.customData?.isGhost === true) return true;
-      if (el.customData?.proposalId) return true;
-      if (el.customData?.status === "proposed" || el.customData?.ghostId) return true;
-      return false;
-    };
 
     // Recompute elements + ghosts
     const syncState = () => {
@@ -291,8 +291,30 @@ export function useBoardSync(boardId: string, wsToken?: string, currentUser?: { 
           return el;
         });
 
+      const yArray = doc.getArray("elements");
+
+      // CRITICAL GUARD: If newElements only contained ghost overlay elements,
+      // never wipe existing canonical elements from Yjs!
+      if (canonical.length === 0 && yArray.length > 0 && newElements.some((el) => isGhostItem(el))) {
+        return;
+      }
+
+      // If user elements match what is already in Yjs, avoid redundant transaction
+      if (canonical.length === yArray.length && yArray.length > 0) {
+        let isIdentical = true;
+        for (let i = 0; i < yArray.length; i++) {
+          const item: any = yArray.get(i);
+          const rawId = item?.get ? item.get("id") : item?.id;
+          const rawVer = item?.get ? item.get("version") : item?.version;
+          if (rawId !== canonical[i]?.id || rawVer !== canonical[i]?.version) {
+            isIdentical = false;
+            break;
+          }
+        }
+        if (isIdentical) return;
+      }
+
       doc.transact(() => {
-        const yArray = doc.getArray("elements");
         yArray.delete(0, yArray.length);
         for (const el of canonical) {
           yArray.push([el]);

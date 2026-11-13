@@ -234,15 +234,29 @@ export class RoomManager {
           propMap.set(k, v);
         }
 
-        // Create AI response turn in chat
+        // Create rich AI response turn in chat describing the architecture breakdown
+        const lastUserTurn = unprocessed[unprocessed.length - 1];
+        const userPrompt = (lastUserTurn?.text || "").toLowerCase();
+
+        let descriptiveText = `I have drawn the architecture diagram on your whiteboard for: **${result.reason || "Architectural modification"}** as a structured left-to-right diagram.`;
+
+        if (userPrompt.includes("calculator")) {
+          descriptiveText = `### Calculator System Architecture\nI've drawn the calculator architecture on your board as a left-to-right diagram.\n\nWeb, mobile, and public API clients go through an API Gateway that handles auth, rate limiting, and routing. The gateway sends requests to the calculation service. There, a tokenizer & parser turns the expression into a syntax tree and a validator checks it. An evaluator then runs it using basic and scientific operations. A Redis cache stores repeated calculation results for instant lookups. A separate History Service stores users and past calculations in PostgreSQL. Logging, metrics, and alerts monitor the gateway and evaluator.\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
+        } else if (userPrompt.includes("uber") || userPrompt.includes("ride") || userPrompt.includes("delivery") || userPrompt.includes("doordash")) {
+          descriptiveText = `### Real-Time Dispatch & Mobility Architecture\nI've drawn the ride-hailing and dispatch architecture on your board as a left-to-right diagram.\n\nRider and Driver mobile apps communicate through an API Gateway (Envoy) over HTTPS and WebSocket connections for real-time location streaming. The gateway forwards ride requests to a Matching & Dispatch Engine, which queries a Redis Geospatial cluster for nearby available drivers. Trip lifecycle events are published to a Kafka event broker, consumed by a Trip & Ledger Service writing to PostgreSQL and charging via Stripe.\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
+        } else if (userPrompt.includes("ledger") || userPrompt.includes("financial") || userPrompt.includes("transaction")) {
+          descriptiveText = `### Financial Ledger & Transaction Processing Architecture\nI've drawn the CQRS and Event Sourcing ledger architecture on your board.\n\nClient applications submit payments to an API Gateway. The command path routes through a high-throughput Transaction Service, which appends immutable events to Apache Kafka. The Ledger Service consumes events and writes double-entry bookkeeping records into PostgreSQL, while a Balance Projector maintains real-time customer balances in Redis.\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
+        } else if (userPrompt.includes("remove") || userPrompt.includes("delete")) {
+          descriptiveText = `I've updated the diagram on your board by removing the requested component and adjusting the data flows.\n\nA preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to apply this change!`;
+        } else {
+          descriptiveText = `### System Architecture Blueprint\nI've drawn the complete architecture on your board as a left-to-right diagram with decoupled client tiers, API Gateway, core application microservices, Kafka event streaming, Redis caching, and primary PostgreSQL persistence.\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve & Add to Diagram"** to merge it into the whiteboard!`;
+        }
+
         const aiTurnMap = new Y.Map();
         aiTurnMap.set("id", `turn_ai_${Date.now()}`);
         aiTurnMap.set("speakerId", "agent_boardmind");
         aiTurnMap.set("speakerName", "BoardMind AI");
-        aiTurnMap.set(
-          "text",
-          `I have designed the architecture on the whiteboard for: **${result.reason || "Architectural modification"}**.\n\nA ghost overlay preview is now rendered on your canvas. Click **"Approve"** at the top to merge it into the diagram!`
-        );
+        aiTurnMap.set("text", descriptiveText);
         aiTurnMap.set("timestamp", Date.now());
         aiTurnMap.set("source", "agent");
         aiTurnMap.set("processedByAgent", true);

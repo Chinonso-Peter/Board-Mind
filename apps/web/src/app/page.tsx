@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { Plus, LayoutDashboard, Cpu, ArrowRight, ShieldCheck, RefreshCw, LogOut, User } from "lucide-react";
+import { Plus, LayoutDashboard, Cpu, ArrowRight, ShieldCheck, RefreshCw, LogOut, User, Trash2 } from "lucide-react";
 import { useSession, signOut } from "next-auth/react";
 
 interface BoardItem {
@@ -77,6 +77,27 @@ export default function DashboardPage() {
       alert(`Failed to create board: ${err.message}`);
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleDeleteBoard = async (e: React.MouseEvent, boardId: string, boardName: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirm(`Are you sure you want to delete board "${boardName}"? This action cannot be undone.`)) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/boards/${boardId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setBoards((prev) => prev.filter((b) => b.id !== boardId));
+      } else {
+        const data = await res.json();
+        alert(`Failed to delete board: ${data.error || "Unknown error"}`);
+      }
+    } catch (err: any) {
+      alert(`Error deleting board: ${err.message}`);
     }
   };
 
@@ -252,7 +273,17 @@ export default function DashboardPage() {
                         <span className="text-xs font-semibold text-indigo-600 px-2 py-0.5 bg-indigo-50 rounded-md">
                           Board
                         </span>
-                        <span className="text-[10px] text-slate-400">Updated {dateStr}</span>
+                        <div className="flex items-center space-x-1.5">
+                          <span className="text-[10px] text-slate-400">Updated {dateStr}</span>
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteBoard(e, b.id, b.name)}
+                            title="Delete board"
+                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                       <h4 className="font-bold text-slate-800 text-sm group-hover:text-indigo-600 transition-colors">
                         {b.name}

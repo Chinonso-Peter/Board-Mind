@@ -53,6 +53,21 @@ export function createDefaultProviders(): LLMProvider[] {
         : null,
     },
     {
+      name: "groq-secondary",
+      model: "openai/gpt-oss-120b",
+      maxRPM: 30,
+      maxRPD: 1000,
+      baseURL: "https://api.groq.com/openai/v1",
+      client: groqKey && groqKey !== "missing"
+        ? new OpenAI({
+            baseURL: "https://api.groq.com/openai/v1",
+            apiKey: groqKey,
+            timeout: 15_000,
+            maxRetries: 0,
+          })
+        : null,
+    },
+    {
       name: "openai",
       model: "gpt-4o-mini",
       maxRPM: 60,
@@ -469,12 +484,132 @@ export class LLMRouter {
         // Ignore JSON parse error
       }
 
+      const deltaMatch = userMsg.match(/LATEST TRANSCRIPT DELTA:\s*([\s\S]*?)(?:CURRENT DIAGRAM GRAPH|$)/i);
+      const instruction = (deltaMatch && deltaMatch[1] ? deltaMatch[1] : userMsg).toLowerCase();
+
+      // 1. DELETE / REMOVE PRIORITY: Check if user asks to remove any component
+      if (instruction.includes("remove") || instruction.includes("delete") || instruction.includes("drop")) {
+        const words = instruction.split(/\s+/);
+        for (const n of graph.nodes || []) {
+          const l = (n.label || "").toLowerCase();
+          const matches =
+            (instruction.includes("cache") && (l.includes("cache") || l.includes("redis"))) ||
+            (instruction.includes("redis") && l.includes("redis")) ||
+            (instruction.includes("kafka") && (l.includes("kafka") || l.includes("queue"))) ||
+            (instruction.includes("queue") && l.includes("queue")) ||
+            (instruction.includes("postgres") && (l.includes("postgres") || l.includes("database") || l.includes("db"))) ||
+            (instruction.includes("database") && (l.includes("database") || l.includes("postgres") || l.includes("db"))) ||
+            (instruction.includes("gateway") && l.includes("gateway")) ||
+            (instruction.includes("stripe") && (l.includes("stripe") || l.includes("payment"))) ||
+            (instruction.includes("payment") && (l.includes("stripe") || l.includes("payment"))) ||
+            (instruction.includes("web") && l.includes("web")) ||
+            (instruction.includes("mobile") && l.includes("mobile")) ||
+            (instruction.includes("client") && l.includes("client")) ||
+            (instruction.includes("auth") && l.includes("auth")) ||
+            (instruction.includes("history") && l.includes("history")) ||
+            words.some((w) => w.length > 3 && l.includes(w));
+
+          if (matches) {
+            operations.push({ op: "remove_node", id: n.id });
+          }
+        }
+        if (operations.length > 0) {
+          return {
+            content: JSON.stringify({ operations }),
+            provider: "local-synthesizer",
+            model: "rule-engine",
+            tokens: 150,
+            providerIndex: 0,
+          };
+        }
+      }
+
+      // 2. INSERT_BETWEEN: Check if user asks to place middleware or cache in between
+      if ((instruction.includes("between") || instruction.includes("in front of")) && graph.nodes?.length >= 2) {
+        const sourceNode = graph.nodes.find((n: any) => n.id.includes("checkout") || n.id.includes("service") || n.id.includes("gateway") || n.nodeType === "service");
+        const targetNode = graph.nodes.find((n: any) => n.id.includes("postgres") || n.id.includes("db") || n.nodeType === "database");
+        if (sourceNode && targetNode && sourceNode.id !== targetNode.id) {
+          const isRedis = instruction.includes("redis") || instruction.includes("cache");
+          operations.push({
+            op: "insert_between",
+            sourceId: sourceNode.id,
+            targetId: targetNode.id,
+            newNode: {
+              label: isRedis ? "Redis Cache" : "Message Queue",
+              nodeType: isRedis ? "cache" : "queue",
+            },
+          });
+          return {
+            content: JSON.stringify({ operations }),
+            provider: "local-synthesizer",
+            model: "rule-engine",
+            tokens: 180,
+            providerIndex: 0,
+          };
+        }
+      }
+
+      // 3. FULL SYSTEM ARCHITECTURES (e.g. Miro-style multi-tier left-to-right designs)
       if (
-        lower.includes("ledger") ||
-        lower.includes("financial") ||
-        lower.includes("transaction") ||
-        lower.includes("sustainable") ||
-        lower.includes("competitive")
+        instruction.includes("calculator") ||
+        lower.includes("calculator")
+      ) {
+        operations.push(
+          { op: "add_node", label: "Web App", nodeType: "external", positionHint: "center" },
+          { op: "add_node", label: "Mobile App", nodeType: "external", positionHint: "below" },
+          { op: "add_node", label: "Public API Consumers", nodeType: "external", positionHint: "below" },
+          { op: "add_node", label: "API Gateway (Auth & Rate Limit)", nodeType: "gateway", positionHint: "right_of" },
+          { op: "add_node", label: "Tokenizer & AST Parser", nodeType: "service", positionHint: "right_of" },
+          { op: "add_node", label: "Expression Validator", nodeType: "service", positionHint: "right_of" },
+          { op: "add_node", label: "Evaluator Engine", nodeType: "service", positionHint: "right_of" },
+          { op: "add_node", label: "Redis Result Cache", nodeType: "cache", positionHint: "above" },
+          { op: "add_node", label: "History Service", nodeType: "service", positionHint: "below" },
+          { op: "add_node", label: "PostgreSQL (Users & History)", nodeType: "database", positionHint: "right_of" },
+          { op: "add_node", label: "Observability (Logs & Alerts)", nodeType: "service", positionHint: "below" },
+          { op: "add_edge", sourceId: "Web App", targetId: "API Gateway (Auth & Rate Limit)", label: "HTTPS / REST" },
+          { op: "add_edge", sourceId: "Mobile App", targetId: "API Gateway (Auth & Rate Limit)", label: "HTTPS / REST" },
+          { op: "add_edge", sourceId: "Public API Consumers", targetId: "API Gateway (Auth & Rate Limit)", label: "API Key" },
+          { op: "add_edge", sourceId: "API Gateway (Auth & Rate Limit)", targetId: "Tokenizer & AST Parser", label: "JSON POST" },
+          { op: "add_edge", sourceId: "Tokenizer & AST Parser", targetId: "Expression Validator", label: "AST" },
+          { op: "add_edge", sourceId: "Expression Validator", targetId: "Evaluator Engine", label: "Valid AST" },
+          { op: "add_edge", sourceId: "Evaluator Engine", targetId: "Redis Result Cache", label: "Cache Lookup" },
+          { op: "add_edge", sourceId: "Evaluator Engine", targetId: "History Service", label: "Async Event" },
+          { op: "add_edge", sourceId: "History Service", targetId: "PostgreSQL (Users & History)", label: "SQL Insert" },
+          { op: "add_edge", sourceId: "API Gateway (Auth & Rate Limit)", targetId: "Observability (Logs & Alerts)", label: "Metrics / Trace" }
+        );
+      } else if (
+        instruction.includes("uber") ||
+        instruction.includes("ride") ||
+        instruction.includes("delivery") ||
+        instruction.includes("doordash") ||
+        lower.includes("uber") ||
+        lower.includes("ride")
+      ) {
+        operations.push(
+          { op: "add_node", label: "Rider Mobile App", nodeType: "external", positionHint: "center" },
+          { op: "add_node", label: "Driver Mobile App", nodeType: "external", positionHint: "below" },
+          { op: "add_node", label: "API Gateway (Envoy)", nodeType: "gateway", positionHint: "right_of" },
+          { op: "add_node", label: "Matching & Dispatch Engine", nodeType: "service", positionHint: "right_of" },
+          { op: "add_node", label: "Location Cache (Redis Geo)", nodeType: "cache", positionHint: "above" },
+          { op: "add_node", label: "Kafka Event Broker", nodeType: "queue", positionHint: "right_of" },
+          { op: "add_node", label: "Trip & Ledger Service", nodeType: "service", positionHint: "below" },
+          { op: "add_node", label: "PostgreSQL (Trips & Users)", nodeType: "database", positionHint: "right_of" },
+          { op: "add_node", label: "Stripe Payment Gateway", nodeType: "external", positionHint: "below" },
+          { op: "add_edge", sourceId: "Rider Mobile App", targetId: "API Gateway (Envoy)", label: "HTTPS / REST" },
+          { op: "add_edge", sourceId: "Driver Mobile App", targetId: "API Gateway (Envoy)", label: "WebSocket / Geo" },
+          { op: "add_edge", sourceId: "API Gateway (Envoy)", targetId: "Matching & Dispatch Engine", label: "gRPC" },
+          { op: "add_edge", sourceId: "Matching & Dispatch Engine", targetId: "Location Cache (Redis Geo)", label: "GeoRadius" },
+          { op: "add_edge", sourceId: "Matching & Dispatch Engine", targetId: "Kafka Event Broker", label: "TripRequested" },
+          { op: "add_edge", sourceId: "Kafka Event Broker", targetId: "Trip & Ledger Service", label: "Consume Trip" },
+          { op: "add_edge", sourceId: "Trip & Ledger Service", targetId: "PostgreSQL (Trips & Users)", label: "Persist SQL" },
+          { op: "add_edge", sourceId: "Trip & Ledger Service", targetId: "Stripe Payment Gateway", label: "Charge API" }
+        );
+      } else if (
+        instruction.includes("ledger") ||
+        instruction.includes("financial") ||
+        instruction.includes("transaction") ||
+        instruction.includes("banking") ||
+        lower.includes("ledger")
       ) {
         operations.push(
           { op: "add_node", label: "Client Application", nodeType: "external", positionHint: "center" },
@@ -493,29 +628,44 @@ export class LLMRouter {
           { op: "add_edge", sourceId: "Balance Projector", targetId: "Redis Balance Cache", label: "Update Cache" },
           { op: "add_edge", sourceId: "Ledger Service (Event Store)", targetId: "PostgreSQL Database", label: "Persist SQL" }
         );
-      } else if (lower.includes("calculator")) {
+      } else if (
+        instruction.includes("e-commerce") ||
+        instruction.includes("shop") ||
+        instruction.includes("store") ||
+        lower.includes("commerce")
+      ) {
         operations.push(
-          { op: "add_node", label: "Calculator Web/Mobile Client", nodeType: "external", positionHint: "center" },
-          { op: "add_node", label: "API Gateway", nodeType: "gateway", positionHint: "right_of" },
-          { op: "add_node", label: "Calculation Engine Service", nodeType: "service", positionHint: "right_of" },
-          { op: "add_node", label: "Result Cache (Redis)", nodeType: "cache", positionHint: "above" },
-          { op: "add_node", label: "Calculation History DB (Postgres)", nodeType: "database", positionHint: "below" },
-          { op: "add_edge", sourceId: "Calculator Web/Mobile Client", targetId: "API Gateway", label: "HTTPS / REST" },
-          { op: "add_edge", sourceId: "API Gateway", targetId: "Calculation Engine Service", label: "gRPC" },
-          { op: "add_edge", sourceId: "Calculation Engine Service", targetId: "Result Cache (Redis)", label: "Cache Lookup" },
-          { op: "add_edge", sourceId: "Calculation Engine Service", targetId: "Calculation History DB (Postgres)", label: "SQL" }
+          { op: "add_node", label: "Customer Web & Mobile App", nodeType: "external", positionHint: "center" },
+          { op: "add_node", label: "API Gateway (Kong)", nodeType: "gateway", positionHint: "right_of" },
+          { op: "add_node", label: "Product Catalog Service", nodeType: "service", positionHint: "above" },
+          { op: "add_node", label: "Elasticsearch (Search Engine)", nodeType: "database", positionHint: "right_of" },
+          { op: "add_node", label: "Order & Checkout Service", nodeType: "service", positionHint: "right_of" },
+          { op: "add_node", label: "Redis Session Cache", nodeType: "cache", positionHint: "below" },
+          { op: "add_node", label: "Kafka Event Queue", nodeType: "queue", positionHint: "right_of" },
+          { op: "add_node", label: "PostgreSQL (Orders DB)", nodeType: "database", positionHint: "below" },
+          { op: "add_node", label: "Payment Gateway (Stripe)", nodeType: "external", positionHint: "right_of" },
+          { op: "add_edge", sourceId: "Customer Web & Mobile App", targetId: "API Gateway (Kong)", label: "HTTPS" },
+          { op: "add_edge", sourceId: "API Gateway (Kong)", targetId: "Product Catalog Service", label: "REST" },
+          { op: "add_edge", sourceId: "Product Catalog Service", targetId: "Elasticsearch (Search Engine)", label: "Query" },
+          { op: "add_edge", sourceId: "API Gateway (Kong)", targetId: "Order & Checkout Service", label: "gRPC" },
+          { op: "add_edge", sourceId: "Order & Checkout Service", targetId: "Redis Session Cache", label: "Cart State" },
+          { op: "add_edge", sourceId: "Order & Checkout Service", targetId: "Kafka Event Queue", label: "OrderCreated" },
+          { op: "add_edge", sourceId: "Order & Checkout Service", targetId: "PostgreSQL (Orders DB)", label: "SQL Write" },
+          { op: "add_edge", sourceId: "Order & Checkout Service", targetId: "Payment Gateway (Stripe)", label: "Charge" }
         );
-      } else if (!graph.nodes || graph.nodes.length === 0 || lower.includes("draw") || lower.includes("diagram") || lower.includes("create")) {
+      } else if (!graph.nodes || graph.nodes.length === 0 || instruction.includes("draw") || instruction.includes("create") || instruction.includes("design") || instruction.includes("architecture")) {
         operations.push(
-          { op: "add_node", label: "Client Application", nodeType: "external", positionHint: "center" },
-          { op: "add_node", label: "API Gateway", nodeType: "gateway", positionHint: "right_of" },
+          { op: "add_node", label: "Client Application (Web/Mobile)", nodeType: "external", positionHint: "center" },
+          { op: "add_node", label: "API Gateway (Kong/Envoy)", nodeType: "gateway", positionHint: "right_of" },
           { op: "add_node", label: "Core Application Service", nodeType: "service", positionHint: "right_of" },
           { op: "add_node", label: "In-Memory Cache (Redis)", nodeType: "cache", positionHint: "above" },
-          { op: "add_node", label: "Primary Database (Postgres)", nodeType: "database", positionHint: "below" },
-          { op: "add_edge", sourceId: "Client Application", targetId: "API Gateway", label: "HTTPS / REST" },
-          { op: "add_edge", sourceId: "API Gateway", targetId: "Core Application Service", label: "gRPC" },
+          { op: "add_node", label: "Kafka Event Broker", nodeType: "queue", positionHint: "below" },
+          { op: "add_node", label: "Primary Database (PostgreSQL)", nodeType: "database", positionHint: "right_of" },
+          { op: "add_edge", sourceId: "Client Application (Web/Mobile)", targetId: "API Gateway (Kong/Envoy)", label: "HTTPS / REST" },
+          { op: "add_edge", sourceId: "API Gateway (Kong/Envoy)", targetId: "Core Application Service", label: "gRPC" },
           { op: "add_edge", sourceId: "Core Application Service", targetId: "In-Memory Cache (Redis)", label: "Cache Read/Write" },
-          { op: "add_edge", sourceId: "Core Application Service", targetId: "Primary Database (Postgres)", label: "SQL" }
+          { op: "add_edge", sourceId: "Core Application Service", targetId: "Kafka Event Broker", label: "Publish Events" },
+          { op: "add_edge", sourceId: "Core Application Service", targetId: "Primary Database (PostgreSQL)", label: "SQL Transaction" }
         );
       } else {
         // Find relevant anchor nodes
@@ -638,19 +788,41 @@ export class LLMRouter {
     }
 
     // Conversational Architectural Advisory
-    const topic = lower.includes("calculator")
-      ? "Calculator Distributed System"
-      : lower.includes("uber") || lower.includes("ride")
-      ? "Ride-Hailing & Real-Time Dispatch System"
-      : lower.includes("checkout") || lower.includes("e-commerce")
-      ? "E-Commerce Checkout & Payment Engine"
-      : "Distributed Cloud Architecture";
+    if (lower.includes("calculator")) {
+      return {
+        content: `### Calculator System Architecture\nI've designed the calculator architecture on your board as a structured left-to-right diagram.\n\nWeb, mobile, and public API clients go through an API Gateway that handles auth, rate limiting, and routing. The gateway sends requests to the calculation service. There, a tokenizer and parser turns the expression into an Abstract Syntax Tree (AST) and a validator checks syntax, divide-by-zero, and limits. An evaluator engine then runs the calculation using basic operations (+, -, *, /) and scientific operations (trig, log, powers). A Redis cache stores repeated calculation results for instant lookups. A separate History Service stores users and past calculations in PostgreSQL. Logging, metrics, and alerts monitor the gateway and evaluator.\n\nWhenever you want to modify, add components (e.g. "Add a Currency Converter", "Add Redis Cache"), or remove components (e.g. "Delete Redis cache"), let me know and I will update your whiteboard!`,
+        provider: "local-synthesizer",
+        model: "rule-engine",
+        tokens: 310,
+        providerIndex: 0,
+      };
+    } else if (lower.includes("uber") || lower.includes("ride") || lower.includes("delivery") || lower.includes("doordash")) {
+      return {
+        content: `### Real-Time Dispatch & Mobility System Architecture\nI've designed the ride-hailing and dispatch architecture on your board as a structured left-to-right diagram.\n\nRider and Driver mobile apps communicate through an API Gateway (Envoy) over HTTPS and WebSocket connections for real-time location streaming. The gateway forwards ride requests to a Matching & Dispatch Engine, which queries a Redis Geospatial cluster for nearby available drivers. Once a match is confirmed, trip lifecycle events are published to a Kafka event broker. A Trip & Ledger Service consumes these events and persists records into PostgreSQL, while asynchronously triggering the Stripe Payment Gateway for fare processing and dispatching push notifications.\n\nYou can ask me to modify, connect new microservices, or remove components at any time!`,
+        provider: "local-synthesizer",
+        model: "rule-engine",
+        tokens: 310,
+        providerIndex: 0,
+      };
+    } else if (lower.includes("ledger") || lower.includes("financial") || lower.includes("transaction") || lower.includes("bank")) {
+      return {
+        content: `### Real-Time Financial Ledger & Transaction Processing Architecture\nI've designed the financial ledger architecture on your board following CQRS and Event Sourcing patterns.\n\nClient applications submit payments to an API Gateway with strict mTLS and rate limiting. The command path routes through a high-throughput Transaction Service, which appends immutable financial events to an Apache Kafka broker. An Event Sourcing Ledger Service consumes events and writes double-entry bookkeeping records into a sharded PostgreSQL cluster. Simultaneously, a Balance Projector maintains real-time customer balances in a Redis cluster for sub-millisecond read access.\n\nLet me know if you would like to insert a fraud-detection engine or update any data flow!`,
+        provider: "local-synthesizer",
+        model: "rule-engine",
+        tokens: 310,
+        providerIndex: 0,
+      };
+    }
+
+    const topic = lower.includes("checkout") || lower.includes("e-commerce") || lower.includes("shop")
+      ? "E-Commerce Checkout & Payment Platform"
+      : "High-Availability Distributed Cloud Architecture";
 
     return {
-      content: `I've analyzed the architectural requirements for **${topic}**.\n\n### Recommended Architectural Breakdown:\n1. **Client Tier**: Web & Native Mobile clients communicating over HTTPS with WebSocket connections for real-time state updates.\n2. **Edge & Ingress**: Resilient API Gateway managing authentication, rate limiting, and request routing.\n3. **Application Services**: High-throughput microservices (Calculation / Domain Logic) decoupled for elastic scalability.\n4. **Data & Caching**: Multi-tier persistence with an In-Memory Redis caching cluster in front of a primary transactional PostgreSQL database.\n\nWhenever you're ready, say **"draw the architecture"** or **"draw it"** and I will compile and render these components and data flows directly onto our whiteboard!`,
+      content: `### ${topic}\nI've analyzed the system requirements and designed the architecture on your whiteboard as a structured multi-tier diagram.\n\n1. **Clients Tier**: Mobile and Web applications communicate securely over HTTPS with WebSocket support for real-time event updates.\n2. **Edge & Ingress**: Cloud API Gateway terminating TLS, enforcing JWT authentication, rate limiting, and intelligent load balancing.\n3. **Application Services**: Decoupled microservices handling business domain logic with independent autoscaling.\n4. **Event Streaming & Caching**: Apache Kafka message queue for asynchronous decoupling and Redis in-memory caching for sub-millisecond reads.\n5. **Persistence**: Transactional PostgreSQL database cluster with read-replicas for durable relational data.\n\nYou can instruct me to add, delete, or modify any component (e.g. "Add a Redis cache", "Delete PostgreSQL", "Insert Kafka between Gateway and Service")!`,
       provider: "local-synthesizer",
       model: "rule-engine",
-      tokens: 220,
+      tokens: 290,
       providerIndex: 0,
     };
   }

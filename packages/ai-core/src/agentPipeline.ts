@@ -317,7 +317,7 @@ ${JSON.stringify(compactGraph, null, 2)}`;
     // ==========================================
     // STAGE 5: GHOST OVERLAY GENERATION
     // ==========================================
-    const ghostResult = generateGhostOverlay(plannedMutations, proposalId);
+    const ghostResult = generateGhostOverlay(plannedMutations, proposalId, rawElements);
 
     if (this.db) {
       try {

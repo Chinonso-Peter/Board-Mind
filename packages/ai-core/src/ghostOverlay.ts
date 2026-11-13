@@ -8,9 +8,14 @@ export interface GhostOverlayResult {
 
 export function generateGhostOverlay(
   mutations: PlannedMutation[],
-  proposalId: string
+  proposalId: string,
+  rawElements: ExcalidrawElement[] = []
 ): GhostOverlayResult {
   const ghostElements: ExcalidrawElement[] = [];
+  const rawMap = new Map<string, ExcalidrawElement>();
+  for (const el of rawElements) {
+    if (el && el.id) rawMap.set(el.id, el);
+  }
 
   for (const mut of mutations) {
     if (mut.op === "add") {
@@ -64,6 +69,31 @@ export function generateGhostOverlay(
       }
 
       ghostElements.push(cloned);
+    } else if (mut.op === "delete") {
+      const orig = rawMap.get(mut.elementId);
+      if (
+        orig &&
+        (orig.type === "rectangle" ||
+          orig.type === "ellipse" ||
+          orig.type === "diamond" ||
+          orig.type === "arrow")
+      ) {
+        const cloned: ExcalidrawElement = JSON.parse(JSON.stringify(orig));
+        cloned.id = `ghost_del_${cloned.id}`;
+        cloned.strokeStyle = "dashed";
+        cloned.strokeColor = "#e11d48"; // Rose-600 deletion warning
+        cloned.backgroundColor = "#ffe4e6"; // Rose-100
+        cloned.opacity = 65;
+        cloned.locked = false;
+        cloned.customData = {
+          ...(cloned.customData || {}),
+          isGhost: true,
+          isDeleteGhost: true,
+          proposalId,
+          originalElementId: mut.elementId,
+        };
+        ghostElements.push(cloned);
+      }
     }
   }
 

@@ -138,8 +138,33 @@ export const Canvas: React.FC<CanvasProps> = ({
       import("@excalidraw/excalidraw").then(({ restoreElements }) => {
         try {
           isUpdatingFromSyncRef.current = true;
-          const restored = restoreElements(elements as any, null);
+
+          // Reconcile scene elements with Excalidraw's internal state.
+          // In Excalidraw, omitted elements are NOT deleted unless explicitly flagged with isDeleted: true.
+          const currentScene = excalidrawApi.getSceneElementsIncludingDeleted();
+          const targetIds = new Set((elements || []).map((e: any) => e.id));
+
+          const purgedElements = currentScene
+            .filter((e: any) => !targetIds.has(e.id))
+            .map((e: any) => ({
+              ...e,
+              isDeleted: true,
+              version: (e.version || 0) + 1,
+              versionNonce: (e.versionNonce || 0) + 1,
+            }));
+
+          const combined = [...(elements || []), ...purgedElements];
+          const restored = restoreElements(combined as any, null);
           excalidrawApi.updateScene({ elements: restored });
+
+          // If the synchronized elements list is empty, reset the scene completely
+          if ((!elements || elements.length === 0) && currentScene.length > 0) {
+            try {
+              excalidrawApi.resetScene();
+            } catch {
+              // Ignore
+            }
+          }
 
           // Auto-fit content so the entire architecture is centered
           const shouldAutoFit =
@@ -230,7 +255,7 @@ export const Canvas: React.FC<CanvasProps> = ({
 
       // Debounce saving canonical elements to Yjs
       saveTimeoutRef.current = setTimeout(() => {
-        if (newElements && newElements.length > 0) {
+        if (newElements) {
           updateElements(newElements);
         }
         setTimeout(() => {

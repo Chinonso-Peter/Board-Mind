@@ -421,6 +421,32 @@ export function planOperations(
   }
 
   function execRemoveNode(id: string): void {
+    const cleanId = (id || "").toLowerCase().trim();
+    if (
+      cleanId === "all" ||
+      cleanId === "*" ||
+      cleanId === "all_nodes" ||
+      cleanId === "architecture" ||
+      cleanId === "diagram" ||
+      cleanId === "design" ||
+      cleanId === "board"
+    ) {
+      for (const edgeId of Array.from(state.edges.keys())) {
+        execRemoveEdge(edgeId);
+      }
+      for (const nodeId of Array.from(state.nodes.keys())) {
+        const n = state.nodes.get(nodeId);
+        if (n?.textId) {
+          mutations.push({ op: "delete", elementId: n.textId });
+          state.elementsMap.delete(n.textId);
+        }
+        mutations.push({ op: "delete", elementId: nodeId });
+        state.elementsMap.delete(nodeId);
+      }
+      state.nodes.clear();
+      return;
+    }
+
     const node = resolveNode(id);
     if (!node) return;
     const actualId = node.id;

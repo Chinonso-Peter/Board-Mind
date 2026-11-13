@@ -201,7 +201,8 @@ Allowed operations (use ONLY these 8 types):
 Constraints:
 - Reference existing node and edge IDs accurately from CURRENT DIAGRAM GRAPH.
 - Prefer "insert_between" when placing middleware/caches/queues along an existing connection.
-- If the decision is to draw or generate an architecture for ANY system (e.g. streaming, calculator, ride-hailing, e-commerce, messaging, fintech, healthcare, IoT, games, social network, etc.), generate a complete set of add_node and add_edge operations with standard components (Client/Apps -> API Gateway -> Microservices -> Databases/Caches/Queues) with descriptive labels and protocols.
+- If the user asks to "draw", "draw the system", "draw it", "create", "generate", or "redraw", you MUST generate a full set of operations. If nodes already exist and the user is asking to draw the system, first issue remove_node for "all" (or update/replace them) and generate the full, complete set of add_node and add_edge operations with standard components (Client/Apps -> API Gateway -> Microservices -> Databases/Caches/Queues) with descriptive labels and protocols.
+- You must NEVER return an empty operations array! If the user requests drawing, produce at least 3-8 add_node and add_edge operations.
 - Include a 2-paragraph professional technical "explanation" explaining why this design was chosen and how data travels through the system.
 - Output strictly valid JSON: {"operations": EditIntent[], "explanation": string}`;
 

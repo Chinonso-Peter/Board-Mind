@@ -1,0 +1,75 @@
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: boardmind-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - sync
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: boardmind-web
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - SQLITE_PATH=/data/db/boardmind.sqlite
+      - DATA_DIR=/data
+      - NEXTAUTH_URL=https://${DOMAIN:-localhost}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-boardmind-production-secret-key-32chars}
+      - WS_JWT_SECRET=${WS_JWT_SECRET:-boardmind-default-jwt-secret-key-32chars}
+    volumes:
+      - boardmind_data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "1.50"
+          memory: 3072M
+
+  sync:
+    build:
+      context: .
+      dockerfile: apps/sync-server/Dockerfile
+    container_name: boardmind-sync
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - SQLITE_PATH=/data/db/boardmind.sqlite
+      - DATA_DIR=/data
+      - WS_JWT_SECRET=${WS_JWT_SECRET:-boardmind-default-jwt-secret-key-32chars}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}
+      - CLOUDFLARE_API_KEY=${CLOUDFLARE_API_KEY}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - ZAI_API_KEY=${ZAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - boardmind_data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 4096M
+
+volumes:
+  boardmind_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,20 @@
+{$DOMAIN:localhost} {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "microphone=(self)"
+    }
+
+    # Realtime Yjs Sync & Binary Voice Audio WebSockets
+    @websockets {
+        path /ws/*
+    }
+    reverse_proxy @websockets sync:4000
+
+    # Next.js 15 Frontend, PWA Service Worker & REST APIs
+    reverse_proxy web:3000
+}

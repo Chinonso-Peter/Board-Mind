@@ -129,9 +129,10 @@ export const Canvas: React.FC<CanvasProps> = ({
 
   // Sync elements into Excalidraw using restoreElements and auto-center viewport
   useEffect(() => {
-    // If user is actively drawing, dragging, or just edited locally (< 800ms ago), DO NOT overwrite the scene!
-    if (isLocalInteractingRef.current || Date.now() - lastLocalUpdateTimestampRef.current < 800) {
-      return;
+    // Clear any pending debounced local save to prevent reviving deleted elements!
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
     }
 
     if (excalidrawApi && elements) {
@@ -142,7 +143,7 @@ export const Canvas: React.FC<CanvasProps> = ({
           const currentScene = excalidrawApi.getSceneElementsIncludingDeleted();
 
           // If the synchronized elements list is empty, reset the scene completely
-          if ((!elements || elements.length === 0)) {
+          if (!elements || elements.length === 0) {
             if (currentScene.length > 0) {
               try {
                 excalidrawApi.resetScene();
@@ -200,7 +201,7 @@ export const Canvas: React.FC<CanvasProps> = ({
         } finally {
           setTimeout(() => {
             isUpdatingFromSyncRef.current = false;
-          }, 120);
+          }, 400);
         }
       });
     }

@@ -25,6 +25,8 @@ export interface RoomContext {
   evaluatingAi: boolean;
   aiDebounceTimer?: NodeJS.Timeout;
   idleTimer?: NodeJS.Timeout;
+  isBoardCleared?: boolean;
+  deletedElementIds?: Set<string>;
 }
 
 export class RoomManager {
@@ -63,7 +65,7 @@ export class RoomManager {
       const awareness = new awarenessProtocol.Awareness(doc);
 
       // Hydrate from SQLite if snapshot exists
-      this.snapshotStorage.loadRoomStateFromDb(boardId, doc);
+      const hasSnapshot = this.snapshotStorage.loadRoomStateFromDb(boardId, doc);
 
       // Ensure standard schema structures
       const elementsArray = doc.getArray("elements");
@@ -78,8 +80,9 @@ export class RoomManager {
         meta.set("proposalsUsedInSession", 0);
       }
 
-      // If board is empty, auto-seed with canonical architecture diagram
-      if (elementsArray.length === 0) {
+      // If board is brand new and has never been snapshotted, auto-seed with canonical architecture diagram
+      if (!hasSnapshot && elementsArray.length === 0 && !meta.get("initialized")) {
+        meta.set("initialized", true);
         const seedElements = createSeedDiagram();
         doc.transact(() => {
           for (const el of seedElements) {
@@ -98,7 +101,17 @@ export class RoomManager {
         conns: roomConns,
         dirty: false,
         evaluatingAi: false,
+        isBoardCleared: false,
       };
+
+      // Anti-resurrection observer: if the board was cleared by AI deletion, prevent stale client updates from reviving old elements
+      elementsArray.observe(() => {
+        if (newRoom.isBoardCleared && elementsArray.length > 0) {
+          doc.transact(() => {
+            elementsArray.delete(0, elementsArray.length);
+          }, "purge-resurrected");
+        }
+      });
 
       // Set up transcript observer for AI pipeline
       this.attachTranscriptObserver(newRoom);
@@ -240,9 +253,15 @@ export class RoomManager {
         // Create rich AI response turn in chat describing the architecture breakdown
         let descriptiveText = "";
 
+        const allMutationsAreDelete =
+          Array.isArray(result.mutations) &&
+          result.mutations.length > 0 &&
+          result.mutations.every((m: any) => m.op === "delete");
+
         const isTotalClear =
-          (/\b(delete|dlete|clear|remove|purge|drop|wipe)\b/i.test(userPrompt)) &&
-          (/\b(all|whole|architecture|diagram|board|design|everything|components)\b/i.test(userPrompt));
+          allMutationsAreDelete ||
+          ((/\b(delete|dlete|clear|remove|purge|drop|wipe)\b/i.test(userPrompt)) &&
+           (/\b(all|whole|architecture|architectural|diagram|board|design|everything|components|it)\b/i.test(userPrompt)));
 
         if (isTotalClear) {
           descriptiveText = `I deleted the architecture diagram, so the board is empty again. If you want to try a different version, describe what system you would like to design!`;
@@ -306,13 +325,13 @@ export class RoomManager {
           // DIRECT AGENT EXECUTION: Apply mutations immediately to whiteboard
           const elementsArray = room.doc.getArray("elements");
 
-          const isTotalClear =
-            (/\b(delete|dlete|clear|remove|purge|drop|wipe)\b/i.test(userPrompt)) &&
-            (/\b(all|whole|architecture|diagram|board|design|everything)\b/i.test(userPrompt));
-
           if (isTotalClear) {
+            room.isBoardCleared = true;
             elementsArray.delete(0, elementsArray.length);
           } else {
+            if (result.mutations?.some((m: any) => m.op === "add")) {
+              room.isBoardCleared = false;
+            }
             for (const mut of (result.mutations || [])) {
               if (mut.op === "add") {
                 elementsArray.push([mut.element]);
@@ -644,13 +663,23 @@ CRITICAL IDENTITY & DIRECT WHITEBOARD CAPABILITY:
           }
         } else if (syncType === syncProtocol.messageYjsSyncStep2) {
           if (role !== "viewer") {
-            syncProtocol.readSyncStep2(decoder, room.doc, ws);
-            room.dirty = true;
+            if (!room.isBoardCleared) {
+              syncProtocol.readSyncStep2(decoder, room.doc, ws);
+              room.dirty = true;
+            }
           }
         } else if (syncType === syncProtocol.messageYjsUpdate) {
           if (role !== "viewer") {
-            syncProtocol.readUpdate(decoder, room.doc, ws);
-            room.dirty = true;
+            if (room.isBoardCleared) {
+              // Stale un-refreshed client trying to push old scene back while board is cleared: reject update and enforce empty state
+              const replyEncoder = encoding.createEncoder();
+              encoding.writeVarUint(replyEncoder, MESSAGE_SYNC);
+              syncProtocol.writeSyncStep1(replyEncoder, room.doc);
+              ws.send(encoding.toUint8Array(replyEncoder));
+            } else {
+              syncProtocol.readUpdate(decoder, room.doc, ws);
+              room.dirty = true;
+            }
           }
         }
       } else if (messageType === MESSAGE_AWARENESS) {

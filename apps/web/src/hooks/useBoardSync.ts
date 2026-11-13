@@ -305,6 +305,22 @@ export function useBoardSync(boardId: string, wsToken?: string, currentUser?: { 
         }
       }
 
+      // CRITICAL RESURRECTION GUARD: If Yjs was cleared (e.g. deletion command from AI),
+      // never allow the local scene cache or debounced save to revive old deleted diagram nodes!
+      if (yArray.length === 0 && canonical.length > 0) {
+        const onlyOldNodes = canonical.every(
+          (el) =>
+            el.customData?.aiGenerated ||
+            el.id?.startsWith("node_") ||
+            el.id?.startsWith("edge_") ||
+            el.id?.startsWith("text_") ||
+            el.id?.startsWith("txt_")
+        );
+        if (onlyOldNodes) {
+          return;
+        }
+      }
+
       // If user elements match what is already in Yjs, avoid redundant transaction
       if (canonical.length === yArray.length && yArray.length > 0) {
         let isIdentical = true;

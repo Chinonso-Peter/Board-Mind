@@ -232,6 +232,39 @@ export interface WorkingGraph {
   elementsMap: Map<string, ExcalidrawElement>;
 }
 
+export function classifyNodeTier(label: string, nodeType: NodeType): number {
+  const l = label.toLowerCase();
+  if (/stripe|paypal|payment gateway|sms|twilio|email|third[- ]party|provider/i.test(l) && !/client|mobile|web|portal|app/i.test(l)) {
+    return 3; // External 3rd-party provider
+  }
+  if (
+    nodeType === "external" ||
+    /client|mobile|web|portal|app|dashboard|tablet|kiosk|display|frontend|ui|pos/i.test(l)
+  ) {
+    return 0; // Channels / Clients
+  }
+  if (
+    nodeType === "gateway" ||
+    /gateway|ingress|proxy|envoy|kong|bff|router|load balancer|alb|nlb/i.test(l)
+  ) {
+    return 1; // Ingress / Gateway
+  }
+  if (
+    nodeType === "queue" ||
+    /queue|kafka|rabbitmq|sqs|event|pubsub|broker|stream/i.test(l)
+  ) {
+    return 3; // Event Broker / Streaming
+  }
+  if (
+    nodeType === "database" ||
+    nodeType === "cache" ||
+    /db|database|postgres|sql|mongo|dynamo|redis|cache|s3|storage|store|repository|lake/i.test(l)
+  ) {
+    return 4; // Data / Persistence
+  }
+  return 2; // Core Domain Microservices
+}
+
 export function buildWorkingGraph(elements: ExcalidrawElement[]): WorkingGraph {
   const nodes = new Map<string, DiagramNode>();
   const edges = new Map<string, DiagramEdge>();
@@ -291,6 +324,19 @@ export function planOperations(
 ): PlannedMutation[] {
   const state = buildWorkingGraph(initialElements);
   const mutations: PlannedMutation[] = [];
+
+  const addNodeIntents = intents.filter((i) => i.op === "add_node");
+  const isMultiNodeArchitecture = addNodeIntents.length >= 2 || (state.nodes.size === 0 && addNodeIntents.length > 0);
+
+  const tierX: Record<number, number> = {
+    0: 100,  // Channels / Clients
+    1: 420,  // Gateway / Ingress
+    2: 740,  // Core Services
+    3: 1080, // Brokers & External Integrations
+    4: 1400, // Data / Persistence & Cache
+  };
+  const tierCounts: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 };
+  const plannedNodesByTier: Record<number, DiagramNode[]> = { 0: [], 1: [], 2: [], 3: [], 4: [] };
 
   function resolveNode(ref?: string | null): DiagramNode | undefined {
     if (!ref) return undefined;
@@ -359,6 +405,11 @@ export function planOperations(
             break;
         }
       }
+    } else if (isMultiNodeArchitecture) {
+      const tier = classifyNodeTier(label, nodeType);
+      rawX = tierX[tier] ?? 740;
+      rawY = 120 + (tierCounts[tier] || 0) * 115;
+      tierCounts[tier] = (tierCounts[tier] || 0) + 1;
     } else if (state.nodes.size > 0) {
       let maxRight = -Infinity;
       let refY = 200;
@@ -399,6 +450,10 @@ export function planOperations(
     });
 
     const nodeRecord: DiagramNode = { id: nodeId, textId, label, nodeType, x, y, width, height };
+    const tier = classifyNodeTier(label, nodeType);
+    if (!plannedNodesByTier[tier]) plannedNodesByTier[tier] = [];
+    plannedNodesByTier[tier].push(nodeRecord);
+
     state.nodes.set(nodeId, nodeRecord);
     state.elementsMap.set(nodeId, shapeEl);
     state.elementsMap.set(textId, textEl);
@@ -700,6 +755,57 @@ export function planOperations(
       case "fork_path":
         execForkPath(intent.sourceId, intent.branchNode, intent.targetId || undefined);
         break;
+    }
+  }
+
+  // Synthesize standard architectural data-flow edges if fewer than 2 edges were planned in a multi-node architecture
+  const hasEdges = intents.some((i) => i.op === "add_edge" || i.op === "insert_between" || i.op === "fork_path");
+  if (isMultiNodeArchitecture && (!hasEdges || state.edges.size < 2)) {
+    const clients = plannedNodesByTier[0] || [];
+    const gateways = plannedNodesByTier[1] || [];
+    const services = plannedNodesByTier[2] || [];
+    const brokers = plannedNodesByTier[3] || [];
+    const storages = plannedNodesByTier[4] || [];
+
+    // Target for clients: gateway if exists, else first service
+    const ingressTarget = gateways[0] || services[0];
+    if (ingressTarget) {
+      for (const client of clients) {
+        execAddEdge(client.id, ingressTarget.id, "HTTPS / WSS");
+      }
+    }
+
+    // Gateway connects to services
+    if (gateways.length > 0 && services.length > 0) {
+      for (const svc of services) {
+        execAddEdge(gateways[0].id, svc.id, "gRPC / REST");
+      }
+    }
+
+    // Core services connect to database and cache
+    if (services.length > 0 && storages.length > 0) {
+      const dbNode = storages.find((s) => /postgres|sql|mongo|dynamo|db|database/i.test(s.label)) || storages[0];
+      const cacheNode = storages.find((s) => /redis|cache|memcache/i.test(s.label));
+
+      for (const svc of services) {
+        execAddEdge(svc.id, dbNode.id, "SQL / Read-Write");
+        if (cacheNode) {
+          execAddEdge(svc.id, cacheNode.id, "sub-ms cache");
+        }
+      }
+    }
+
+    // Services connect to message broker or external payments
+    if (services.length > 0 && brokers.length > 0) {
+      for (const broker of brokers) {
+        if (/stripe|paypal|payment/i.test(broker.label)) {
+          const paymentSvc = services.find((s) => /payment|billing|checkout/i.test(s.label)) || services[0];
+          execAddEdge(paymentSvc.id, broker.id, "REST API");
+        } else {
+          const orderSvc = services.find((s) => /order|checkout|event|kitchen/i.test(s.label)) || services[0];
+          execAddEdge(orderSvc.id, broker.id, "Event Stream");
+        }
+      }
     }
   }
 

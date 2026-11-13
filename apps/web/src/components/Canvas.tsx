@@ -139,9 +139,22 @@ export const Canvas: React.FC<CanvasProps> = ({
         try {
           isUpdatingFromSyncRef.current = true;
 
+          const currentScene = excalidrawApi.getSceneElementsIncludingDeleted();
+
+          // If the synchronized elements list is empty, reset the scene completely
+          if ((!elements || elements.length === 0)) {
+            if (currentScene.length > 0) {
+              try {
+                excalidrawApi.resetScene();
+              } catch {
+                // Ignore
+              }
+            }
+            return;
+          }
+
           // Reconcile scene elements with Excalidraw's internal state.
           // In Excalidraw, omitted elements are NOT deleted unless explicitly flagged with isDeleted: true.
-          const currentScene = excalidrawApi.getSceneElementsIncludingDeleted();
           const targetIds = new Set((elements || []).map((e: any) => e.id));
 
           const purgedElements = currentScene
@@ -156,15 +169,6 @@ export const Canvas: React.FC<CanvasProps> = ({
           const combined = [...(elements || []), ...purgedElements];
           const restored = restoreElements(combined as any, null);
           excalidrawApi.updateScene({ elements: restored });
-
-          // If the synchronized elements list is empty, reset the scene completely
-          if ((!elements || elements.length === 0) && currentScene.length > 0) {
-            try {
-              excalidrawApi.resetScene();
-            } catch {
-              // Ignore
-            }
-          }
 
           // Auto-fit content so the entire architecture is centered
           const shouldAutoFit =

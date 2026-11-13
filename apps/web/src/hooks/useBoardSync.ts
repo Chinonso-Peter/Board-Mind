@@ -293,10 +293,16 @@ export function useBoardSync(boardId: string, wsToken?: string, currentUser?: { 
 
       const yArray = doc.getArray("elements");
 
-      // CRITICAL GUARD: If newElements only contained ghost overlay elements,
-      // never wipe existing canonical elements from Yjs!
-      if (canonical.length === 0 && yArray.length > 0 && newElements.some((el) => isGhostItem(el))) {
-        return;
+      // CRITICAL GUARD: Never wipe existing canonical elements from Yjs when local state
+      // temporarily reports 0 elements (e.g. during initial mount, scene reset, tab switch,
+      // unhydrated canvas, or ghost overlay filtering).
+      // Only allow emptying the array if the user explicitly deleted shapes on canvas
+      // (in which case Excalidraw passes elements with `isDeleted: true`).
+      if (canonical.length === 0 && yArray.length > 0) {
+        const hasExplicitDeletions = newElements.some((el: any) => el && el.isDeleted === true);
+        if (!hasExplicitDeletions) {
+          return;
+        }
       }
 
       // If user elements match what is already in Yjs, avoid redundant transaction

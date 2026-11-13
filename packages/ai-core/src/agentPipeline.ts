@@ -160,9 +160,13 @@ ${deltaContext}`;
     // Safety override: if the user's latest text discusses or requests system architecture/design, enforce is_decision: true
     const latestTextLower = transcriptDelta.map((t) => t.text.toLowerCase()).join(" ");
     if (
-      /\b(draw|arcitecture|architecture|design|generate|create|build|modify|update|diagram|cache|redis|kafka|queue|service|database|postgres|ledger|system|app|delete|remove|drop|disconnect|purge|relabel|rename|insert|add)\b/i.test(
+      /\b(draw|drew|drawn|arcitecture|architecture|design|generate|create|build|modify|update|diagram|cache|redis|kafka|queue|service|database|postgres|ledger|system|app|delete|dlete|remove|drop|disconnect|purge|relabel|rename|insert|add|nothing|blank|empty|put|render|blueprint|whiteboard)\b/i.test(
         latestTextLower
-      )
+      ) ||
+      latestTextLower.includes("nothing on my board") ||
+      latestTextLower.includes("you drew nothing") ||
+      latestTextLower.includes("drew nothing") ||
+      latestTextLower.includes("draw it")
     ) {
       decision.is_decision = true;
       decision.confidence = 1.0;

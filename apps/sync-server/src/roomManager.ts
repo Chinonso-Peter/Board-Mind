@@ -215,18 +215,21 @@ export class RoomManager {
 
       if (result.status === "proposed" && result.proposalId && result.mutations && result.ghostResult) {
         const proposalsMap = room.doc.getMap("proposals");
+        const lastUserTurn = unprocessed[unprocessed.length - 1];
+        const userPrompt = (lastUserTurn?.text || "").toLowerCase();
+
         const propRecord: ProposalRecord = {
           id: result.proposalId,
-          status: "pending",
+          status: "approved",
           decisionSummary: result.reason || "Architectural modification",
           confidence: result.confidence || 0.9,
           providerUsed: result.providerUsed || "groq",
           operationsJson: JSON.stringify(result.mutations),
           plannedMutationsJson: JSON.stringify(result.mutations),
-          ghostElementsJson: JSON.stringify(result.ghostResult.ghostElements),
+          ghostElementsJson: "[]",
           createdAt: Date.now(),
-          resolvedBy: null,
-          resolvedAt: null,
+          resolvedBy: lastUserTurn?.speakerId || "agent",
+          resolvedAt: Date.now(),
         };
 
         const propMap = new Y.Map();
@@ -235,12 +238,15 @@ export class RoomManager {
         }
 
         // Create rich AI response turn in chat describing the architecture breakdown
-        const lastUserTurn = unprocessed[unprocessed.length - 1];
-        const userPrompt = (lastUserTurn?.text || "").toLowerCase();
-
         let descriptiveText = "";
 
-        if (userPrompt.includes("remove") || userPrompt.includes("delete")) {
+        const isTotalClear =
+          (/\b(delete|dlete|clear|remove|purge|drop|wipe)\b/i.test(userPrompt)) &&
+          (/\b(all|whole|architecture|diagram|board|design|everything|components)\b/i.test(userPrompt));
+
+        if (isTotalClear) {
+          descriptiveText = `I deleted the architecture diagram, so the board is empty again. If you want to try a different version, describe what system you would like to design!`;
+        } else if (userPrompt.includes("remove") || userPrompt.includes("delete") || userPrompt.includes("dlete")) {
           descriptiveText = `I've updated the architecture diagram on your whiteboard by removing the requested components.\n\n*(Auto-applied to whiteboard. You can undo or restore previous states anytime from the Checkpoints tab)*`;
         } else if (result.explanation && result.explanation.trim().length > 40) {
           descriptiveText = `${result.explanation.trim()}\n\n*(Drawn directly on your whiteboard. You can ask me to modify, connect new microservices, or delete components anytime!)*`;
@@ -299,33 +305,42 @@ export class RoomManager {
         room.doc.transact(() => {
           // DIRECT AGENT EXECUTION: Apply mutations immediately to whiteboard
           const elementsArray = room.doc.getArray("elements");
-          for (const mut of (result.mutations || [])) {
-            if (mut.op === "add") {
-              elementsArray.push([mut.element]);
-            } else if (mut.op === "delete") {
-              for (let i = elementsArray.length - 1; i >= 0; i--) {
-                const item: any = elementsArray.get(i);
-                const rawEl = typeof item?.toJSON === "function" ? item.toJSON() : item;
-                if (rawEl && rawEl.id === mut.elementId) {
-                  elementsArray.delete(i, 1);
-                }
-              }
-            } else if (mut.op === "update") {
-              for (let i = 0; i < elementsArray.length; i++) {
-                const item: any = elementsArray.get(i);
-                const rawEl = typeof item?.toJSON === "function" ? item.toJSON() : item;
-                if (rawEl && rawEl.id === mut.elementId) {
-                  const updated = { ...rawEl };
-                  for (const [pk, pv] of Object.entries(mut.patch)) {
-                    if (pk === "appendBoundElement") {
-                      const existingBounds = Array.isArray(updated.boundElements) ? updated.boundElements : [];
-                      updated.boundElements = [...existingBounds, pv];
-                    } else {
-                      updated[pk] = pv;
-                    }
+
+          const isTotalClear =
+            (/\b(delete|dlete|clear|remove|purge|drop|wipe)\b/i.test(userPrompt)) &&
+            (/\b(all|whole|architecture|diagram|board|design|everything)\b/i.test(userPrompt));
+
+          if (isTotalClear) {
+            elementsArray.delete(0, elementsArray.length);
+          } else {
+            for (const mut of (result.mutations || [])) {
+              if (mut.op === "add") {
+                elementsArray.push([mut.element]);
+              } else if (mut.op === "delete") {
+                for (let i = elementsArray.length - 1; i >= 0; i--) {
+                  const item: any = elementsArray.get(i);
+                  const rawEl = typeof item?.toJSON === "function" ? item.toJSON() : item;
+                  if (rawEl && rawEl.id === mut.elementId) {
+                    elementsArray.delete(i, 1);
                   }
-                  elementsArray.delete(i, 1);
-                  elementsArray.insert(i, [updated]);
+                }
+              } else if (mut.op === "update") {
+                for (let i = 0; i < elementsArray.length; i++) {
+                  const item: any = elementsArray.get(i);
+                  const rawEl = typeof item?.toJSON === "function" ? item.toJSON() : item;
+                  if (rawEl && rawEl.id === mut.elementId) {
+                    const updated = { ...rawEl };
+                    for (const [pk, pv] of Object.entries(mut.patch)) {
+                      if (pk === "appendBoundElement") {
+                        const existingBounds = Array.isArray(updated.boundElements) ? updated.boundElements : [];
+                        updated.boundElements = [...existingBounds, pv];
+                      } else {
+                        updated[pk] = pv;
+                      }
+                    }
+                    elementsArray.delete(i, 1);
+                    elementsArray.insert(i, [updated]);
+                  }
                 }
               }
             }
@@ -395,16 +410,23 @@ export class RoomManager {
               messages: [
                 {
                   role: "system",
-                  content: `You are BoardMind AI, an elite Principal Systems Architect on an interactive architectural design whiteboard.
-Current diagram elements: ${rawElements.map((e) => e.customData?.label || e.text || e.id).filter(Boolean).slice(0, 20).join(", ") || "Empty canvas"}.
+                  content: `You are BoardMind AI, an elite Principal Systems Architect Whiteboard Copilot.
+Current whiteboard components: ${rawElements.map((e) => e.customData?.label || e.text || e.id).filter(Boolean).slice(0, 20).join(", ") || "Empty canvas"}.
 
-Guidelines:
-- Act as a deeply knowledgeable, collaborative systems architect colleague.
-- When the user asks about designing any system (e.g. Uber clone, social network, e-commerce, real-time gaming, financial ledger):
+CRITICAL IDENTITY & DIRECT WHITEBOARD CAPABILITY:
+- You ARE BoardMind AI, the visual systems architect copilot connected directly to this whiteboard canvas.
+- You have direct tools to create, draw, modify, connect, and clear architectural diagrams on the whiteboard in real time.
+- NEVER, under any circumstance, say:
+  • "As an AI text model, I do not have a graphical interface"
+  • "I cannot render pixels or shapes"
+  • "I cannot physically draw a square"
+  • "My previous responses were simulating the concept"
+  • "I cannot interact with the whiteboard"
+- When the user asks about designing any system (e.g. restaurant ordering, Uber, social network, e-commerce, banking, real-time gaming, financial ledger):
   • Break down the core architectural patterns (Event-Driven, CQRS, Microservices, Caching, Sharding).
-  • Recommend the essential building blocks (API Gateway, Core Domain Microservices, Databases, Caches, Event Brokers).
+  • Recommend the essential building blocks (Clients, API Gateway, Core Domain Microservices, Databases, Caches, Event Brokers).
   • Discuss real-world trade-offs (latency, scalability, data consistency, idempotency).
-  • Offer to draw the agreed design onto the whiteboard canvas (e.g. "Whenever you're ready, say 'draw this' or 'create the architecture' and I'll lay out the components and data flows on our board!").
+  • Tell the user clearly what you are drawing onto the whiteboard canvas.
 - Keep paragraphs structured, technical, clear, and engaging. Avoid robotic boilerplate.`,
                 },
                 ...historyMessages,
